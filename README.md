@@ -23,23 +23,9 @@ react-native-eye connects Claude Code, Cursor or any other MCP client to your ap
 
 It is built for agent speed. Composite tools run a whole interaction in one call, so the agent does not pay one model round trip per tap.
 
-```text
-› observe
-
-LAYOUT (js):
-Welcome back @196,188
-Email @196,312
-Password @196,380
-Log in @196,468
-Forgot password? @196,532
-Create account @196,772
-
-ERRORS:
-none
-
-LOGS:
-[log] auth: no saved session
-```
+<p align="center">
+  <img src="assets/readme-observe.png" width="552" alt="A login screen next to what the agent reads from one observe call: every element with its tap point (Welcome back @196,188 … Log in @196,468 … Create account @196,772), no errors, and the latest log line.">
+</p>
 
 ## Contents
 
@@ -129,27 +115,24 @@ The composite tools:
 
 ## A whole flow in one call
 
+<p align="center">
+  <img src="assets/readme-flow.png" width="770" alt="A run_flow request with five steps (type the email, type the password, tap Log in through the OS, wait for Home, expect no Error) and the response: Flow completed, every step ok, each naming the input path it used.">
+</p>
+
+<details>
+<summary>The request as JSON</summary>
+
 ```json
 { "steps": [
-  { "tap": { "text": "Login" } },
-  { "wait_for": { "text": "Email", "timeout_ms": 3000 } },
   { "type": { "text": "a@b.c", "into": { "placeholder": "Email" } } },
-  { "tap": { "testID": "submit-btn", "via": "os" } },
-  { "expect": { "text": "Welcome" } },
+  { "type": { "text": "hunter2", "into": { "placeholder": "Password" } } },
+  { "tap": { "text": "Log in", "via": "os" } },
+  { "wait_for": { "text": "Home", "timeout_ms": 3000 } },
   { "expect_not": { "text": "Error" } }
 ] }
 ```
 
-```text
-Flow completed.
-
-1. tap({"text":"Login"}) — ok (input: js)
-2. wait_for({"text":"Email","timeout_ms":3000}) — ok
-3. type({"text":"a@b.c","into":{"placeholder":"Email"}}) — ok (input: js)
-4. tap({"testID":"submit-btn","via":"os"}) — ok (input: os/runner)
-5. expect({"text":"Welcome"}) — ok
-6. expect_not({"text":"Error"}) — ok
-```
+</details>
 
 Each step takes exactly one action (`settle` is a modifier) — a step with two actions is a validation error, not a silently skipped assertion. Steps run back-to-back with adaptive settling (two rendered frames, capped at 1s; override per step with `"settle": 200`). A redbox or uncaught exception anywhere in the flow aborts it immediately with full context, and steps that never ran are listed as such.
 
@@ -159,14 +142,9 @@ Each step takes exactly one action (`settle` is a modifier) — a step with two 
 
 The server reaches the app two ways and picks the cheaper one for each call.
 
-```text
-Your agent (Claude Code, Cursor, Codex)
-        │  MCP · stdio
-        ▼
-react-native-eye (on your machine)
-        ├── CDP · Metro ──────▶ JS runtime (Hermes): layout, presses, typing, logs, network, state
-        └── HTTP · localhost ─▶ Driver on the device: real touches, keys, OS view hierarchy, screenshots
-```
+<p align="center">
+  <img src="assets/readme-how.png" width="1124" alt="Your agent (Claude Code, Cursor, Codex) talks to react-native-eye over MCP stdio. react-native-eye reaches the JS runtime (Hermes) over CDP through Metro for layout, presses, typing, logs, network and state, and the driver on the device over HTTP on localhost for real touches, keys, the OS view hierarchy and screenshots.">
+</p>
 
 **Through the JS runtime.** The server walks React's fiber tree over CDP. It measures elements and calls press and text handlers directly, with no touch involved. A press takes about a millisecond and a full-screen layout about 80 ms.
 
