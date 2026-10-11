@@ -1,0 +1,32 @@
+{
+  "name": "react-native-eye",
+  "version": "0.0.1",
+  "description": "Safe, fast MCP server giving AI agents eyes into a running React Native app.",
+  "type": "module",
+  "bin": { "react-native-eye": "./build/index.js" },
+  "main": "./build/index.js",
+  "files": ["build", "NOTICE", "native/LICENSE-APACHE", "native/ios-runner/THIRD_PARTY.md", "native/android-server/THIRD_PARTY.md", "native/android-server/licenses", "!build/**/*.map"],
+  "engines": { "node": ">=18.0.0" },
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc && chmod 755 build/index.js",
+    "start": "node build/index.js",
+    "dev": "tsx src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "RNE_INTEGRATION_UDID=$RNE_INTEGRATION_UDID vitest run --project integration",
+    "prepublishOnly": "npm run build && node scripts/check-drivers.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.25.1",
+    "ws": "^8.18.3",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.0"
+  }
+}

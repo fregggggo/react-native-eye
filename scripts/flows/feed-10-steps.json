@@ -1,0 +1,16 @@
+{
+  "via": "os",
+  "observe": "none",
+  "steps": [
+    { "swipe": { "direction": "up" } },
+    { "swipe": { "direction": "up" } },
+    { "swipe": { "direction": "up" } },
+    { "tap": { "x": 201, "y": 437 } },
+    { "tap": { "x": 201, "y": 437 } },
+    { "swipe": { "direction": "down" } },
+    { "swipe": { "direction": "down" } },
+    { "swipe": { "direction": "down" } },
+    { "swipe": { "direction": "up" } },
+    { "swipe": { "direction": "down" } }
+  ]
+}

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  No INTERNET permission: the server (the instrumentation, which runs in this package's
+  process) listens on an abstract Unix socket only.
+  The probe activity and the IME receiver require android.permission.DUMP from their
+  caller: the shell uid (`adb shell am start` / `am broadcast`) holds it, third-party apps
+  cannot. Not a signature permission: rneye.keystore is committed, anyone can sign with it.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:label="RNEye server" android:allowBackup="false">
+        <activity android:name=".ProbeActivity" android:process=":probe" android:exported="true"
+            android:permission="android.permission.DUMP"
+            android:windowSoftInputMode="stateVisible" />
+        <service android:name=".input.RneInputMethodService" android:process=":ime"
+            android:label="RNEye input" android:exported="true"
+            android:permission="android.permission.BIND_INPUT_METHOD">
+            <intent-filter><action android:name="android.view.InputMethod" /></intent-filter>
+            <meta-data android:name="android.view.im" android:resource="@xml/rne_input_method" />
+        </service>
+        <receiver android:name=".receivers.UnicodeInputReceiver" android:process=":ime" android:exported="true"
+            android:permission="android.permission.DUMP">
+            <intent-filter>
+                <action android:name="dev.rneye.server.ime.commitText" />
+                <action android:name="dev.rneye.server.ime.status" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

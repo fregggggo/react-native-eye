@@ -1,0 +1,98 @@
+{
+  "meta": {
+    "screens": [
+      "contacts-keyboard",
+      "contacts-new-form",
+      "settings-root",
+      "settings-switches",
+      "settings-slider",
+      "quick-feed",
+      "quick-search-keyboard",
+      "att-alert"
+    ],
+    "device": "DCB7FA7A-F93C-49AA-AB44-B780923BD14A",
+    "updatedAt": "2026-09-24T18:32:23.264Z"
+  },
+  "pairs": [
+    {
+      "elementType": 1,
+      "axeType": "GenericElement",
+      "count": 14
+    },
+    {
+      "elementType": 1,
+      "axeType": "Group",
+      "count": 2
+    },
+    {
+      "elementType": 2,
+      "axeType": "Application",
+      "count": 7
+    },
+    {
+      "elementType": 7,
+      "axeType": "Sheet",
+      "count": 1
+    },
+    {
+      "elementType": 9,
+      "axeType": "Button",
+      "count": 27
+    },
+    {
+      "elementType": 20,
+      "axeType": "Button",
+      "count": 52
+    },
+    {
+      "elementType": 33,
+      "axeType": "Slider",
+      "count": 1
+    },
+    {
+      "elementType": 40,
+      "axeType": "CheckBox",
+      "count": 8
+    },
+    {
+      "elementType": 42,
+      "axeType": "Link",
+      "count": 2
+    },
+    {
+      "elementType": 43,
+      "axeType": "Image",
+      "count": 2
+    },
+    {
+      "elementType": 45,
+      "axeType": "TextField",
+      "count": 1
+    },
+    {
+      "elementType": 48,
+      "axeType": "StaticText",
+      "count": 55
+    },
+    {
+      "elementType": 48,
+      "axeType": "Heading",
+      "count": 5
+    },
+    {
+      "elementType": 52,
+      "axeType": "TextArea",
+      "count": 2
+    },
+    {
+      "elementType": 75,
+      "axeType": "Button",
+      "count": 24
+    },
+    {
+      "elementType": 75,
+      "axeType": "Group",
+      "count": 6
+    }
+  ]
+}

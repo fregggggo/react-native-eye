@@ -1,0 +1,58 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`recorded describe-ui payload > parses into a stable element list > element count 1`] = `10`;
+
+exports[`recorded describe-ui payload > parses into a stable element list > first five elements 1`] = `
+[
+  {
+    "h": 35,
+    "offscreen": undefined,
+    "testID": undefined,
+    "text": "All",
+    "type": "GenericElement",
+    "w": 94.66666412353516,
+    "x": 12,
+    "y": 132.33333015441895,
+  },
+  {
+    "h": 35,
+    "offscreen": undefined,
+    "testID": undefined,
+    "text": "Users",
+    "type": "GenericElement",
+    "w": 94.33333587646484,
+    "x": 106.66666412353516,
+    "y": 132.33333015441895,
+  },
+  {
+    "h": 35,
+    "offscreen": undefined,
+    "testID": undefined,
+    "text": "Hashtags",
+    "type": "GenericElement",
+    "w": 94.66665649414062,
+    "x": 201,
+    "y": 132.33333015441895,
+  },
+  {
+    "h": 35,
+    "offscreen": undefined,
+    "testID": undefined,
+    "text": "Videos",
+    "type": "GenericElement",
+    "w": 94.33334350585938,
+    "x": 295.6666564941406,
+    "y": 132.33333015441895,
+  },
+  {
+    "h": 42,
+    "offscreen": undefined,
+    "testID": undefined,
+    "text": "#cat, 0 posts",
+    "type": "GenericElement",
+    "w": 378,
+    "x": 12,
+    "y": 184.66666412353516,
+  },
+]
+`;

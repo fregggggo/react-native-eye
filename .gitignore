@@ -1,0 +1,13 @@
+node_modules
+build
+*.log
+.DS_Store
+.cache/
+xcuserdata/
+native/android-server/**/build/
+.gradle/
+.kotlin/
+local.properties
+.superpowers/
+.claude/
+docs/superpowers/

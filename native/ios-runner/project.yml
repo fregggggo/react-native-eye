@@ -1,0 +1,72 @@
+# XcodeGen spec for the react-native-eye iOS runner (XCUITest HTTP driver).
+# Source of truth for RNERunner.xcodeproj. After editing, regenerate with:
+#   cd native/ios-runner && xcodegen generate --spec project.yml
+# and commit both this file and the regenerated RNERunner.xcodeproj.
+name: RNERunner
+options:
+  bundleIdPrefix: dev.rneye
+  deploymentTarget:
+    iOS: "14.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: false
+packages:
+  FlyingFox:
+    url: https://github.com/swhitty/FlyingFox
+    exactVersion: 0.22.0
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "14.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: ""
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  RNERunner:
+    type: application
+    platform: iOS
+    sources:
+      - path: RNERunner
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.rneye.runner
+        INFOPLIST_FILE: RNERunner/Info.plist
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+        INFOPLIST_KEY_UILaunchStoryboardName: LaunchScreen
+        INFOPLIST_KEY_UIMainStoryboardFile: Main
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+  RNERunnerUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: RNERunnerUITests
+    dependencies:
+      - target: RNERunner
+      - package: FlyingFox
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.rneye.runnerUITests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: RNERunner
+        SWIFT_OBJC_BRIDGING_HEADER: RNERunnerUITests/Categories/RNERunnerUITests-Bridging-Header.h
+        HEADER_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(SRCROOT)/RNERunnerUITests/PrivateHeaders/XCTest"
+          - "$(SRCROOT)/RNERunnerUITests/Categories"
+          - "$(SRCROOT)/RNERunnerUITests/Utilities"
+        CLANG_ENABLE_MODULES: YES
+        ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: YES
+        SWIFT_EMIT_LOC_STRINGS: NO
+schemes:
+  RNERunner:
+    build:
+      targets:
+        RNERunner: all
+        RNERunnerUITests: [test]
+    test:
+      config: Debug
+      targets:
+        - RNERunnerUITests
