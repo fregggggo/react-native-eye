@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" fill="none" stroke-linecap="round" stroke-linejoin="round">
+  <title>react-native-eye</title>
+  <rect width="120" height="120" rx="28" fill="#1C1C1E" stroke="none"/>
+  <g transform="translate(14 14) scale(0.7667)">
+    <ellipse cx="60" cy="60" rx="52" ry="19" transform="rotate(60 60 60)" stroke="#EDEDEF" stroke-width="8"/>
+    <ellipse cx="60" cy="60" rx="52" ry="19" transform="rotate(-60 60 60)" stroke="#EDEDEF" stroke-width="8"/>
+    <path d="M6 60 C 30 28, 90 28, 114 60 C 90 92, 30 92, 6 60 Z" stroke="#61DAFB" stroke-width="8" fill="#1C1C1E"/>
+    <circle cx="60" cy="60" r="15" stroke="#EDEDEF" stroke-width="8"/>
+    <circle cx="60" cy="60" r="8" fill="#61DAFB" stroke="none"/>
+  </g>
+</svg>

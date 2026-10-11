@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-on-dark.svg">
+    <img alt="" src="assets/logo-on-light.svg" width="112" height="112">
+  </picture>
+</p>
+
 <h1 align="center">react-native-eye</h1>
 
 <p align="center">

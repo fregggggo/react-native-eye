@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" fill="none" stroke-linecap="round" stroke-linejoin="round">
+  <title>react-native-eye</title>
+  <defs>
+    <mask id="rne-eye-cut" maskUnits="userSpaceOnUse" x="0" y="0" width="120" height="120">
+      <rect width="120" height="120" fill="#fff"/>
+      <path d="M6 60 C 30 28, 90 28, 114 60 C 90 92, 30 92, 6 60 Z" fill="#000"/>
+    </mask>
+  </defs>
+  <g mask="url(#rne-eye-cut)" stroke="#EDEDEF" stroke-width="5">
+    <ellipse cx="60" cy="60" rx="52" ry="19" transform="rotate(60 60 60)"/>
+    <ellipse cx="60" cy="60" rx="52" ry="19" transform="rotate(-60 60 60)"/>
+  </g>
+  <path d="M6 60 C 30 28, 90 28, 114 60 C 90 92, 30 92, 6 60 Z" stroke="#61DAFB" stroke-width="5.5"/>
+  <circle cx="60" cy="60" r="15" stroke="#EDEDEF" stroke-width="5"/>
+  <circle cx="60" cy="60" r="7" fill="#61DAFB"/>
+</svg>
