@@ -118,6 +118,86 @@ describe("resolveAppSpace", () => {
   });
 });
 
+// Whether RN subtracted the visible-frame origin depends on the runtime:
+// Fabric applies the root's viewportOffset only when the surface started on
+// the UI thread. Field test 3 (RN 0.83) measured the root at y = −41.14 dp
+// (offset applied); a fresh Expo app on RN 0.86 measures it at y = 0 (not
+// applied) and every JS rect landed 144 px too low. The root's own frame says
+// which one this app is.
+describe("resolveAppSpace calibrated by the root frame", () => {
+  beforeEach(() => resetAppSpaceCache());
+
+  const WINDOW = { x: 0, y: 0, w: 1440, h: 3120 };
+  function driver(state: { x: number; y: number; window?: typeof WINDOW }) {
+    let reads = 0;
+    const d = {
+      platform: "android",
+      pointScale: async () => 3.5,
+      appOrigin: async () => {
+        reads++;
+        return state;
+      },
+    } as unknown as DeviceDriver;
+    return { d, reads: () => reads };
+  }
+
+  it("offset applied (root at −status bar): the visible-frame origin stands", async () => {
+    const { d } = driver({ x: 0, y: 144, window: WINDOW });
+    const viewport = { x: 0, y: -41.14, w: 411.43, h: 891.43 };
+    expect(await resolveAppSpace(d, "S", { viewport })).toEqual({ scale: 3.5, x: 0, y: 144 });
+  });
+
+  it("offset not applied (root at 0 on an edge-to-edge window): origin is the window's top", async () => {
+    const { d } = driver({ x: 0, y: 144, window: WINDOW });
+    const viewport = { x: 0, y: 0, w: 411.43, h: 891.43 };
+    expect(await resolveAppSpace(d, "S", { viewport })).toEqual({ scale: 3.5, x: 0, y: 0 });
+  });
+
+  it("a root padded below the bar (classic window, shorter than the screen) starts at the visible top", async () => {
+    const { d } = driver({ x: 0, y: 144, window: WINDOW });
+    const viewport = { x: 0, y: 0, w: 411.43, h: 826.29 }; // 2892 px: between the bars
+    expect(await resolveAppSpace(d, "S", { viewport })).toEqual({ scale: 3.5, x: 0, y: 144 });
+  });
+
+  it("a left cutout in landscape, offset not applied: origin x is the window's left", async () => {
+    const { d } = driver({ x: 144, y: 0, window: { x: 0, y: 0, w: 3120, h: 1440 } });
+    const viewport = { x: 0, y: 0, w: 891.43, h: 411.43 };
+    expect(await resolveAppSpace(d, "S", { viewport })).toEqual({ scale: 3.5, x: 0, y: 0 });
+  });
+
+  it("an implausible root (not at either candidate) keeps the visible-frame origin", async () => {
+    const { d } = driver({ x: 0, y: 144, window: WINDOW });
+    const viewport = { x: 0, y: 300, w: 411.43, h: 891.43 };
+    expect(await resolveAppSpace(d, "S", { viewport })).toEqual({ scale: 3.5, x: 0, y: 144 });
+  });
+
+  it("without a window frame or a root frame it is the visible-frame origin, as before", async () => {
+    const a = driver({ x: 0, y: 144 });
+    expect(await resolveAppSpace(a.d, "A", { viewport: { x: 0, y: 0, w: 411.43, h: 891.43 } })).toEqual({ scale: 3.5, x: 0, y: 144 });
+    const b = driver({ x: 0, y: 144, window: WINDOW });
+    expect(await resolveAppSpace(b.d, "B")).toEqual({ scale: 3.5, x: 0, y: 144 });
+  });
+
+  it("a root frame arriving after a press recalibrates the cached read without a second dump", async () => {
+    const { d, reads } = driver({ x: 0, y: 144, window: WINDOW });
+    const now = () => 0;
+    expect((await resolveAppSpace(d, "S", { now })).y).toBe(144);
+    expect((await resolveAppSpace(d, "S", { now, viewport: { x: 0, y: 0, w: 411.43, h: 891.43 } })).y).toBe(0);
+    expect((await resolveAppSpace(d, "S", { now })).y).toBe(0);
+    expect(reads()).toBe(1);
+  });
+
+  it("a press (no root frame) after the TTL re-reads with the last root frame seen", async () => {
+    const { d, reads } = driver({ x: 0, y: 144, window: WINDOW });
+    let t = 0;
+    const now = () => t;
+    await resolveAppSpace(d, "S", { now, viewport: { x: 0, y: 0, w: 411.43, h: 891.43 } });
+    t += ORIGIN_TTL_MS + 1;
+    expect(await resolveAppSpace(d, "S", { now })).toEqual({ scale: 3.5, x: 0, y: 0 });
+    expect(reads()).toBe(2);
+  });
+});
+
 // D38: the overlay-window flag must come from a read made *now*.
 describe("resolveAppSpace fresh read (overlayWindow)", () => {
   beforeEach(() => resetAppSpaceCache());

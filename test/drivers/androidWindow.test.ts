@@ -176,8 +176,9 @@ describe("overlayWindowShown (is a dialog-sized window of the app on screen)", (
   });
 
   it("appWindowState carries the origin and the flag from one dump", () => {
-    expect(appWindowState(DIALOG)).toEqual({ x: 0, y: 144, overlayWindow: true });
-    expect(appWindowState(E2E)).toEqual({ x: 0, y: 144, overlayWindow: false });
+    const window = { x: 0, y: 0, w: 1440, h: 3120 };
+    expect(appWindowState(DIALOG)).toEqual({ x: 0, y: 144, window, overlayWindow: true });
+    expect(appWindowState(E2E)).toEqual({ x: 0, y: 144, window, overlayWindow: false });
     expect(appWindowState("garbage")).toBeUndefined();
   });
 });
@@ -202,13 +203,23 @@ describe("AndroidDriver app space", () => {
 
   it("appOrigin reads the visible display frame through the persistent shell (works without the server)", async () => {
     const { driver, cmds } = driverWith(E2E);
-    expect(await driver.appOrigin("SER-origin")).toEqual({ x: 0, y: 144, overlayWindow: false });
+    expect(await driver.appOrigin("SER-origin")).toEqual({
+      x: 0,
+      y: 144,
+      window: { x: 0, y: 0, w: 1440, h: 3120 },
+      overlayWindow: false,
+    });
     expect(cmds).toEqual([WINDOW_DUMP_CMD]);
   });
 
   it("appOrigin reports the LogBox dialog window from the same single dump (D38)", async () => {
     const { driver, cmds } = driverWith(DIALOG);
-    expect(await driver.appOrigin("SER-origin-dialog")).toEqual({ x: 0, y: 144, overlayWindow: true });
+    expect(await driver.appOrigin("SER-origin-dialog")).toEqual({
+      x: 0,
+      y: 144,
+      window: { x: 0, y: 0, w: 1440, h: 3120 },
+      overlayWindow: true,
+    });
     expect(cmds).toEqual([WINDOW_DUMP_CMD]);
   });
 

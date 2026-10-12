@@ -17,9 +17,19 @@
 // the origin was missing (every JS rect 144 px too high) and the inverse was
 // never applied to a JS press (px handed to a dp hit-test).
 //
+// "RN subtracts" holds only for some runtimes: Fabric applies the root's
+// viewportOffset to measureInWindow only when the surface was started on the
+// UI thread (FabricUIManager.startSurface). Field test 3's app (RN 0.83)
+// measured its root at y = −41.14 dp — offset applied; a fresh Expo app on
+// RN 0.86 measures it at 0 — not applied, and with the visible-frame origin
+// every rect sat 144 px too low. The root's own frame decides: the root
+// starts at the window's top when it is taller than what lies below the
+// visible top (edge-to-edge), else at the visible top (a root padded below
+// the bar), and origin = rootStart − rootMeasured × scale.
+//
 // Vectors (a swipe's travel, a size) convert by scale alone.
 
-import type { DeviceDriver } from "../drivers/types.js";
+import type { AppWindowState, DeviceDriver } from "../drivers/types.js";
 
 export type AppSpace = {
   scale: number;
@@ -77,7 +87,9 @@ function round2(v: number): number {
  */
 export const ORIGIN_TTL_MS = 10_000;
 
-type Cached = { x: number; y: number; at: number; key?: string };
+// The raw window state, not the origin: a root frame that turns up later (a
+// press first, a layout next) recalibrates it without another dump.
+type Cached = { state?: AppWindowState; at: number; key?: string; vp?: Rect };
 const originCache = new Map<string, Cached>();
 
 export function resetAppSpaceCache(): void {
@@ -87,6 +99,24 @@ export function resetAppSpaceCache(): void {
 function viewportKey(vp?: Rect | null): string | undefined {
   if (!vp) return undefined;
   return [vp.x, vp.y, vp.w, vp.h].map((n) => Math.round(n * 10) / 10).join(",");
+}
+
+/**
+ * Where the app's (0,0) is on screen, from the driver's window state and the
+ * root's measured frame (see the header). Without either, or when the result
+ * lands at neither candidate — a first host view that is not the root — the
+ * visible-frame origin stands.
+ */
+function calibrate(o: AppWindowState, vp: Rect | undefined, scale: number): { x: number; y: number } {
+  const win = o.window;
+  if (!vp || !win) return { x: o.x, y: o.y };
+  const axis = (visible: number, winStart: number, winSize: number, at: number, size: number): number => {
+    const rootStart = size * scale > winStart + winSize - visible + 1 ? winStart : visible;
+    const origin = Math.round(rootStart - at * scale);
+    const near = (v: number) => Math.abs(origin - v) <= 2;
+    return near(visible) ? visible : near(winStart) ? winStart : visible;
+  };
+  return { x: axis(o.x, win.x, win.w, vp.x, vp.w), y: axis(o.y, win.y, win.h, vp.y, vp.h) };
 }
 
 /**
@@ -115,15 +145,26 @@ export async function resolveAppSpace(
     now - hit.at < ORIGIN_TTL_MS &&
     (key === undefined || hit.key === undefined || hit.key === key);
   if (fresh) {
-    if (key !== undefined && hit.key === undefined) hit.key = key;
-    return { scale, x: hit.x, y: hit.y };
+    if (key !== undefined && hit.key === undefined) {
+      hit.key = key;
+      hit.vp = opts!.viewport!;
+    }
+    return { scale, ...origin(hit.state, hit.vp, scale) };
   }
   const o = await driver.appOrigin(udid).catch(() => undefined);
-  const x = o && Number.isFinite(o.x) ? o.x : 0;
-  const y = o && Number.isFinite(o.y) ? o.y : 0;
+  const state = o && Number.isFinite(o.x) && Number.isFinite(o.y) ? o : undefined;
+  // A press carries no root frame; the last one seen on this device stands in.
+  const vp = opts?.viewport ?? hit?.vp;
   // A failed read is cached too: on a device whose dumpsys cannot be parsed,
   // paying for it on every call would buy nothing.
-  originCache.set(udid, { x, y, at: now, key });
-  if (opts?.fresh && o && typeof o.overlayWindow === "boolean") return { scale, x, y, overlayWindow: o.overlayWindow };
+  originCache.set(udid, { state, at: now, key, vp });
+  const { x, y } = origin(state, vp, scale);
+  if (opts?.fresh && state && typeof state.overlayWindow === "boolean") {
+    return { scale, x, y, overlayWindow: state.overlayWindow };
+  }
   return { scale, x, y };
+}
+
+function origin(state: AppWindowState | undefined, vp: Rect | undefined, scale: number): { x: number; y: number } {
+  return state ? calibrate(state, vp, scale) : { x: 0, y: 0 };
 }

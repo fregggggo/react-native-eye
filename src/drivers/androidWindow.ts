@@ -1,7 +1,8 @@
 // Where React Native's Android `measureInWindow` puts its (0,0) on the screen.
 //
 // RN subtracts the window's *visible display frame* origin from every
-// measurement, on both architectures (Paper: NativeViewHierarchyManager
+// measurement — when it does at all (see the note in src/layout/appSpace.ts:
+// Fabric skips it for a surface started off the UI thread) — on both architectures (Paper: NativeViewHierarchyManager
 // .measureInWindow; Fabric: the root's viewportOffset = root location −
 // getWindowVisibleDisplayFrame().topLeft, applied with includeViewportOffset).
 // So screen px = visibleFrameOrigin + measureInWindow dp × density.
@@ -234,9 +235,19 @@ export function visibleFrameOrigin(dump: string): { x: number; y: number } | und
  * Everything the tools read from one WINDOW_DUMP_CMD: the app-space origin and
  * whether a dialog-sized window of the app is up. One dump, one round trip.
  */
-export function appWindowState(dump: string): { x: number; y: number; overlayWindow?: boolean } | undefined {
+export function appWindowState(
+  dump: string,
+): { x: number; y: number; window?: { x: number; y: number; w: number; h: number }; overlayWindow?: boolean } | undefined {
   const o = visibleFrameOrigin(dump);
   if (!o) return undefined;
+  // The window's own frame goes along: whether RN actually subtracted the
+  // origin is decided against it and the app's root frame (src/layout/appSpace.ts).
+  const f = appWindow(dump)?.frame;
+  const window = f ? { x: f.l, y: f.t, w: f.r - f.l, h: f.b - f.t } : undefined;
   const overlayWindow = overlayWindowShown(dump);
-  return overlayWindow === undefined ? o : { ...o, overlayWindow };
+  return {
+    ...o,
+    ...(window ? { window } : {}),
+    ...(overlayWindow === undefined ? {} : { overlayWindow }),
+  };
 }

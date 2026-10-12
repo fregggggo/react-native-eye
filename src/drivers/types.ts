@@ -104,6 +104,13 @@ export type FrameStats = {
   unparsed?: string;
 };
 
+export type AppWindowState = {
+  x: number;
+  y: number;
+  window?: { x: number; y: number; w: number; h: number };
+  overlayWindow?: boolean;
+};
+
 export interface DeviceDriver {
   platform: Platform;
   listDevices(): Promise<DeviceId[]>;
@@ -136,8 +143,12 @@ export interface DeviceDriver {
    * window. Left out when the driver cannot tell. It is the OS-side witness
    * for a JS "LogBox covers the screen" verdict, which the runtime alone
    * cannot confirm (field test 3 D38).
+   *
+   * `window` is the app window's frame in the same units, when known: with
+   * the app's root frame it tells whether the app actually measures from the
+   * visible frame (src/layout/appSpace.ts).
    */
-  appOrigin?(udid: string): Promise<{ x: number; y: number; overlayWindow?: boolean } | undefined>;
+  appOrigin?(udid: string): Promise<AppWindowState | undefined>;
   /** Screen size in the driver's own input units, when it can be had cheaply. */
   screenSize?(udid: string): Promise<{ w: number; h: number } | undefined>;
   /**

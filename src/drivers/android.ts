@@ -11,7 +11,7 @@ import { NativePath, type RunnerPool } from "./nativePath.js";
 import { parseTopThreads } from "../perf/parseTop.js";
 import { parseGfxinfo } from "../perf/parseGfxinfo.js";
 import { appWindowState, WINDOW_DUMP_CMD } from "./androidWindow.js";
-import type { CpuSample, DeviceDriver, DeviceId, FrameStats, OsPath, RawElement, RecordingHandle } from "./types.js";
+import type { AppWindowState, CpuSample, DeviceDriver, DeviceId, FrameStats, OsPath, RawElement, RecordingHandle } from "./types.js";
 
 type Runner = typeof defaultRun;
 type Spawner = (cmd: string, args: string[], opts?: { env?: Record<string, string> }) => LongRunningHandle;
@@ -386,7 +386,7 @@ export class AndroidDriver implements DeviceDriver {
    * `dumpsys window` through the persistent shell, so it works on the adb
    * path and never touches UiAutomation; cached by src/layout/appSpace.ts.
    */
-  async appOrigin(udid: string): Promise<{ x: number; y: number; overlayWindow?: boolean } | undefined> {
+  async appOrigin(udid: string): Promise<AppWindowState | undefined> {
     try {
       return appWindowState(await this.shellFor(udid).exec(WINDOW_DUMP_CMD, { timeoutMs: TIMEOUTS.list }));
     } catch {
