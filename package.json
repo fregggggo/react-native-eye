@@ -9,7 +9,7 @@
   "engines": { "node": ">=18.0.0" },
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/Mokutte/react-native-eye.git" },
-  "homepage": "https://github.com/Mokutte/react-native-eye#readme",
+  "homepage": "https://react-native-eye.com",
   "bugs": { "url": "https://github.com/Mokutte/react-native-eye/issues" },
   "scripts": {
     "build": "tsc && chmod 755 build/index.js",

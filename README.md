@@ -19,6 +19,10 @@
   <img alt="No telemetry" src="https://img.shields.io/badge/telemetry-none-61DAFB">
 </p>
 
+<p align="center">
+  <a href="https://react-native-eye.com"><strong>react-native-eye.com</strong></a>
+</p>
+
 react-native-eye connects Claude Code, Cursor or any other MCP client to your app through Metro's Chrome DevTools Protocol endpoint. The agent reads the screen, taps and types, and checks logs, network and state. The app needs no SDK and no code changes.
 
 It is built for agent speed. Composite tools run a whole interaction in one call, so the agent does not pay one model round trip per tap.
