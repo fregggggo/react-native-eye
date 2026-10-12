@@ -1,4 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
+import { WebSocketServer } from "ws";
+import type { AddressInfo } from "node:net";
 import { CdpClient } from "../../src/core/cdp.js";
 import { startFakeMetro, NO_REPLY, type FakeMetro } from "../helpers/fakeCdp.js";
 
@@ -37,6 +39,33 @@ describe("CdpClient", () => {
     await client.connect();
     client.close();
     await expect(client.send("Runtime.evaluate", {})).rejects.toThrow(/not connected|closed/i);
+  });
+
+  // React Native 0.86's inspector proxy answers 401 to a debugger socket whose
+  // Origin is missing or not local (dev-middleware InspectorProxy verifyClient),
+  // and Expo CLI drops the socket when the Origin's host differs from the Host
+  // header. So the Origin has to be the socket URL's own.
+  it.each(["localhost", "127.0.0.1"])("sends the socket's own origin (%s), as RN 0.86+ and Expo require", async (host) => {
+    const origins: (string | undefined)[] = [];
+    const wss = new WebSocketServer({
+      port: 0,
+      verifyClient: (info: { origin?: string; req: { headers: { host?: string } } }) => {
+        origins.push(info.origin);
+        if (!info.origin || !URL.canParse(info.origin)) return false;
+        const url = new URL(info.origin);
+        return ["localhost", "127.0.0.1", "0.0.0.0", "[::]", "[::1]"].includes(url.hostname) && url.host === info.req.headers.host;
+      },
+    });
+    await new Promise((r) => wss.once("listening", r));
+    const { port } = wss.address() as AddressInfo;
+    try {
+      client = new CdpClient(`ws://${host}:${port}/inspector/debug?device=d&page=1`);
+      await client.connect();
+      expect(origins).toEqual([`http://${host}:${port}`]);
+    } finally {
+      client.close();
+      await new Promise((r) => wss.close(r));
+    }
   });
 
   it("connect rejects on an unreachable url", async () => {

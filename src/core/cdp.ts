@@ -24,7 +24,12 @@ export class CdpClient {
 
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(this.wsUrl, { maxPayload: 100 * 1024 * 1024 });
+      // React Native 0.86+ refuses (401) a debugger socket without a local Origin,
+      // and Expo CLI drops one whose Origin host differs from the Host header. The
+      // socket URL's own origin satisfies both: Metro hands out local URLs.
+      const { protocol, host } = new URL(this.wsUrl);
+      const origin = `${protocol === "wss:" ? "https:" : "http:"}//${host}`;
+      const ws = new WebSocket(this.wsUrl, { maxPayload: 100 * 1024 * 1024, origin });
       this.ws = ws;
       const timer = setTimeout(() => {
         ws.terminate();
