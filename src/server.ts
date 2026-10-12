@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerConnectionTools } from "./tools/connection.js";
 import { registerLogTools } from "./tools/logs.js";
@@ -19,9 +20,12 @@ import { registerPerfTools } from "./tools/perf.js";
 import { registerRenderTools } from "./tools/renders.js";
 import { registerJsProfileTools } from "./tools/jsProfile.js";
 
+// Same file from src/ (tsx, vitest) and from build/ (the published package).
+const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
+
 export function buildServer(): McpServer {
   const server = new McpServer(
-    { name: "react-native-eye", version: "0.0.1" },
+    { name: "react-native-eye", version },
     {
       instructions:
         "React Native runtime debugging via Metro/CDP. Prefer the composite tools (observe, run_flow, check_state) — they collapse multi-step interactions into one call. Primitives (tap, get_logs, ...) are for targeted debugging.",

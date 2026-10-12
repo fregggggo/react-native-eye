@@ -12,6 +12,8 @@
 </p>
 
 <p align="center">
+  <a href="https://www.npmjs.com/package/react-native-eye"><img alt="npm version" src="https://img.shields.io/npm/v/react-native-eye?color=61DAFB"></a>
+  <a href="https://github.com/Mokutte/react-native-eye/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Mokutte/react-native-eye/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="MIT license" src="https://img.shields.io/badge/license-MIT-61DAFB">
   <img alt="Node 18 or newer" src="https://img.shields.io/badge/node-%E2%89%A5%2018-61DAFB">
   <img alt="iOS and Android" src="https://img.shields.io/badge/platforms-iOS%20%7C%20Android-61DAFB">
@@ -309,6 +311,8 @@ npm run dev          # run the server from source
 - `npm run test:integration` runs the device tests. They need a booted iOS simulator (its udid in `RNE_INTEGRATION_UDID`) or an Android emulator (its serial in `RNE_INTEGRATION_ANDROID_SERIAL`).
 - `scripts/build-drivers.sh` rebuilds the native drivers under `native/` (Xcode for iOS; JDK 17+ and the Android SDK for Android). Any change under `native/` changes the driver version.
 - `scripts/pack-test.sh` packs the tarball, installs it into a fresh project and checks that the drivers arrive intact and the server answers.
+
+Pull requests are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md). Report security issues privately as described in [SECURITY.md](SECURITY.md).
 
 ## License
 

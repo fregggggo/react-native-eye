@@ -1,6 +1,7 @@
 {
   "name": "react-native-eye",
-  "version": "0.0.1",
+  "version": "0.1.0",
+  "mcpName": "io.github.Mokutte/react-native-eye",
   "description": "Safe, fast MCP server giving AI agents eyes into a running React Native app.",
   "type": "module",
   "bin": { "react-native-eye": "./build/index.js" },
