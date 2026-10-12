@@ -290,6 +290,15 @@ describe("D30: connect accepts an adb serial or a simulator UDID as device", () 
     expect(res.content[0].text).toMatch(/Metro tells targets apart by device name only/);
   });
 
+  it("the picked id stays on the connection, so device tools keep using it", async () => {
+    await metroWith({ id: "t", title: "Demo (iPhone 17 Pro)", deviceName: "iPhone 17 Pro" });
+    await connectWith(
+      { drivers: [iosDriver(["SIM-1", "iPhone 17 Pro"], ["SIM-2", "iPhone 17 Pro"])], pool: fakePool().pool },
+      { device: "SIM-2" },
+    );
+    expect(getRegistry().active().meta.deviceId).toBe("SIM-2");
+  });
+
   it("a serial whose device runs no target on this Metro says which devices do", async () => {
     await metroWith({ id: "ios", title: "Demo", deviceName: "iPhone 17 Pro" });
     const { pool, warms } = fakePool();

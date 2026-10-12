@@ -11,6 +11,11 @@ export type DriverOpts = {
   device?: string;
   /** Device the CDP target reports (Metro sends `deviceName`) — keeps taps on the device being debugged. */
   boundTo?: string;
+  /**
+   * The device id connect was given, when it was given one. Wins over
+   * `boundTo`: Metro's name cannot tell two emulators of one image apart.
+   */
+  boundId?: string;
 };
 
 function label(d: DeviceId): string {
@@ -82,6 +87,11 @@ export async function activeDriver(overrides?: DriverOpts): Promise<ResolvedDevi
   // never matched must not be listed alongside ones that did (it reads as a
   // plausible pick when it never was one).
   let boundToTie: { requested: string; matches: { driver: DeviceDriver; device: DeviceId }[] } | undefined;
+
+  if (overrides?.boundId) {
+    const hit = booted.find((e) => e.device.udid === overrides.boundId);
+    if (hit) return { driver: hit.driver, udid: hit.device.udid, name: hit.device.name };
+  }
 
   if (overrides?.boundTo) {
     const needle = normalizeDeviceName(overrides.boundTo);

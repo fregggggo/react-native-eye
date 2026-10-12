@@ -178,3 +178,26 @@ describe("deviceById (D30)", () => {
     expect((await deviceById("S4", drivers))?.sameName.map((d) => d.udid)).toEqual(["S4"]);
   });
 });
+
+// connect with an explicit id among same-named devices (two emulators of one
+// image): Metro's name ties, the id the connection carries does not.
+describe("activeDriver boundId", () => {
+  const twins = multiDriver([
+    { udid: "SIM-1", name: "iPhone 17 Pro", booted: true },
+    { udid: "SIM-2", name: "iPhone 17 Pro", booted: true },
+  ]);
+
+  it("picks the bound device by id where the bound name is ambiguous", async () => {
+    const res = await activeDriver({ drivers: [twins], boundTo: "iPhone 17 Pro", boundId: "SIM-2" });
+    expect(res.udid).toBe("SIM-2");
+  });
+
+  it("an explicit device still wins over the bound id", async () => {
+    const res = await activeDriver({ drivers: [twins], device: "SIM-1", boundTo: "iPhone 17 Pro", boundId: "SIM-2" });
+    expect(res.udid).toBe("SIM-1");
+  });
+
+  it("a bound id that is no longer booted falls back to the name", async () => {
+    await expect(activeDriver({ drivers: [twins], boundTo: "iPhone 17 Pro", boundId: "SIM-9" })).rejects.toThrow(/ambiguous/);
+  });
+});

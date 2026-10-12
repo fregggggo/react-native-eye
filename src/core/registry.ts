@@ -52,6 +52,8 @@ export type ConnectionMeta = {
   deviceName?: string;
   appId?: string;
   nativePageReloads?: boolean;
+  /** The device id connect was given (adb serial / simulator UDID), if any. */
+  deviceId?: string;
 };
 
 const DEFAULT_EVAL_TIMEOUT_MS = 10000;
@@ -587,8 +589,9 @@ export class Connection {
   }
 }
 
-function targetMeta(port: number, t: CDPTarget): ConnectionMeta {
+function targetMeta(port: number, t: CDPTarget, deviceId?: string): ConnectionMeta {
   return {
+    deviceId,
     port,
     targetId: t.id,
     title: t.title,
@@ -601,7 +604,7 @@ function targetMeta(port: number, t: CDPTarget): ConnectionMeta {
 export class Registry {
   private conn?: Connection;
   private defaultPort?: number;
-  private last?: { port: number; targetId: string; deviceName?: string; title?: string };
+  private last?: { port: number; targetId: string; deviceName?: string; title?: string; deviceId?: string };
   private everConnected = false;
 
   get active_or_null(): Connection | undefined {
@@ -632,7 +635,7 @@ export class Registry {
     return alive.filter((p) => !withTargets.has(p));
   }
 
-  async connect(opts?: { port?: number; targetId?: string; device?: string }): Promise<Connection> {
+  async connect(opts?: { port?: number; targetId?: string; device?: string; deviceId?: string }): Promise<Connection> {
     let metroTarget: MetroTarget | undefined;
     const wantPort = opts?.port ?? this.defaultPort;
     const matchesDevice = (t: CDPTarget): boolean => {
@@ -682,7 +685,7 @@ export class Registry {
     });
     await client.send("Runtime.enable");
     await client.send("Log.enable").catch(() => {});
-    const conn = new Connection(client, targetMeta(metroTarget.port, metroTarget.target));
+    const conn = new Connection(client, targetMeta(metroTarget.port, metroTarget.target, opts?.deviceId));
     beforeConn = false;
     for (const p of announced) conn.adoptContext(p);
     await conn.installInterceptors();
@@ -692,6 +695,7 @@ export class Registry {
       targetId: metroTarget.target.id,
       deviceName: metroTarget.target.deviceName,
       title: metroTarget.target.title,
+      deviceId: opts?.deviceId,
     };
     this.everConnected = true;
     return conn;
@@ -716,7 +720,7 @@ export class Registry {
     if (!this.everConnected || !this.last) throw new ConnectionError(this.notConnectedReason());
     const last = this.last;
     try {
-      return await this.connect({ port: last.port, targetId: last.targetId });
+      return await this.connect({ port: last.port, targetId: last.targetId, deviceId: last.deviceId });
     } catch {
       // The old target is gone (typical after a reload, which gives the app a
       // new target id). Only the same device may take its place: the next
@@ -725,7 +729,7 @@ export class Registry {
       if (last.deviceName) {
         const targets = await fetchTargets(last.port).catch(() => [] as CDPTarget[]);
         const same = pickHermesTarget(targets.filter((t) => t.deviceName === last.deviceName));
-        if (same) return this.connect({ port: last.port, targetId: same.id });
+        if (same) return this.connect({ port: last.port, targetId: same.id, deviceId: last.deviceId });
         // One app often shows up as two targets on a device; name each once.
         const others = [...new Set(targets.map((t) => `"${t.title}"${t.deviceName ? ` [${t.deviceName}]` : ""}`))];
         throw new ConnectionError(
@@ -736,7 +740,7 @@ export class Registry {
         );
       }
       try {
-        return await this.connect({ port: last.port });
+        return await this.connect({ port: last.port, deviceId: last.deviceId });
       } catch (err) {
         throw new ConnectionError(
           `connection to "${this.conn?.meta.title ?? "the app"}" was lost and could not be re-established: ${

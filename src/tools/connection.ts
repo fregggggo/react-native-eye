@@ -186,6 +186,7 @@ export function registerConnectionTools(server: McpServer, opts: ConnectionToolO
           port,
           targetId: target_id,
           device: picked ? picked.metroDevice : device,
+          deviceId: picked?.udid,
         });
         const where = conn.meta.deviceName ? ` on ${conn.meta.deviceName}` : "";
         const stale =

@@ -19,7 +19,9 @@ export type ToolCtx = ResolvedDevice & { conn?: Connection };
  * from Metro there is nothing to compare.
  */
 function sameDevice(conn: Connection, resolved: ResolvedDevice, explicit: string | undefined): boolean {
-  if (!explicit || !conn.meta.deviceName) return true;
+  if (!explicit) return true;
+  if (conn.meta.deviceId) return conn.meta.deviceId === resolved.udid;
+  if (!conn.meta.deviceName) return true;
   const a = normalizeDeviceName(conn.meta.deviceName);
   const b = normalizeDeviceName(resolved.name);
   return a.length === 0 || b.length === 0 || a.includes(b) || b.includes(a);
@@ -27,14 +29,14 @@ function sameDevice(conn: Connection, resolved: ResolvedDevice, explicit: string
 
 export async function deviceContext(opts?: DriverOpts & { device?: string }): Promise<ToolCtx> {
   const conn = await getRegistry().optional();
-  const resolved = await activeDriver({ ...opts, boundTo: conn?.meta.deviceName });
+  const resolved = await activeDriver({ ...opts, boundTo: conn?.meta.deviceName, boundId: conn?.meta.deviceId });
   return { ...resolved, conn: conn && sameDevice(conn, resolved, opts?.device) ? conn : undefined };
 }
 
 /** For tools that genuinely need the app runtime; reconnects if the socket dropped. */
 export async function runtimeContext(opts?: DriverOpts & { device?: string }): Promise<ToolCtx & { conn: Connection }> {
   const conn = await getRegistry().ensure();
-  const resolved = await activeDriver({ ...opts, boundTo: conn.meta.deviceName });
+  const resolved = await activeDriver({ ...opts, boundTo: conn.meta.deviceName, boundId: conn.meta.deviceId });
   if (!sameDevice(conn, resolved, opts?.device)) {
     throw new UserInputError(
       `The connected app runs on ${conn.meta.deviceName}, not on ${resolved.name} (${resolved.udid}) — ` +
