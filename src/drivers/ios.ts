@@ -43,6 +43,13 @@ function backSwipe(vp?: Viewport): { x1: number; y1: number; x2: number; y2: num
 }
 
 const EMPTY_HIERARCHY_RETRY_MS = 400;
+/**
+ * How long an OS gesture or layout waits for a runner start in flight: while
+ * it starts, the runner is in front of the app, so axe would act on the wrong
+ * screen. Covers an install plus the 30 s simctl attempt; the xcodebuild
+ * fallback beyond that is rare and slow, and axe is used meanwhile.
+ */
+export const IOS_START_WAIT_MS = 45_000;
 
 export class IosDriver implements DeviceDriver {
   readonly platform = "ios" as const;
@@ -59,7 +66,7 @@ export class IosDriver implements DeviceDriver {
     // call; the pool is what lives for the whole session.
     pool: RunnerPool = sharedPool(),
   ) {
-    this.native = new NativePath(pool, "ios", "iOS runner", "axe");
+    this.native = new NativePath(pool, "ios", "iOS runner", "axe", IOS_START_WAIT_MS);
   }
 
   async listDevices(): Promise<DeviceId[]> {
@@ -108,7 +115,7 @@ export class IosDriver implements DeviceDriver {
   }
 
   async rawLayout(udid: string): Promise<{ els: RawElement[]; os: OsPath }> {
-    const { backend, reason } = this.native.backendFor(udid);
+    const { backend, reason } = await this.native.backendForOs(udid);
     let why = reason;
     if (backend) {
       try {

@@ -178,6 +178,44 @@ describe("startIosRunner", () => {
     expect(calls.some((c) => c.args[1] === "install")).toBe(false);
   });
 
+  // Launching the runner puts it in front; the app under test goes to the
+  // background, iOS suspends it and its Metro connection drops.
+  it("a fresh start brings `foreground` back to the front, without restarting it", async () => {
+    const { run, calls } = fakeRun({
+      "launchctl list": { stdout: LAUNCHCTL_WITHOUT_RUNNER },
+      get_app_container: { stdout: "/c/Runner.app\n" },
+      "plutil -extract": { stdout: `${VERSION}\n` },
+      "simctl launch": { stdout: `${BUNDLE}: 4242\n` },
+    });
+    const h = await startIosRunner(UDID, deps({ run: run as any, probe: async (p) => (p === 50123 ? VERSION : undefined) }), {
+      foreground: "com.example.app",
+    });
+    expect(h.via).toBe("simctl");
+    expect(argv(calls).at(-1)).toEqual(["xcrun", "simctl", "launch", UDID, "com.example.app"]);
+  });
+
+  it("a reused runner leaves the foreground alone", async () => {
+    const { run, calls } = fakeRun({ "launchctl list": { stdout: LAUNCHCTL_WITH_RUNNER }, lsof: { stdout: LSOF_812 } });
+    await startIosRunner(UDID, deps({ run: run as any, probe: async (p) => (p === 22087 ? VERSION : undefined) }), {
+      foreground: "com.example.app",
+    });
+    expect(calls.some((c) => c.args.includes("launch"))).toBe(false);
+  });
+
+  it("a failed foreground hand-back does not fail the start", async () => {
+    const { run } = fakeRun({
+      "launchctl list": { stdout: LAUNCHCTL_WITHOUT_RUNNER },
+      get_app_container: { stdout: "/c/Runner.app\n" },
+      "plutil -extract": { stdout: `${VERSION}\n` },
+      [`simctl launch ${UDID} com.example.app`]: new DriverError("xcrun failed: app not installed"),
+      "simctl launch": { stdout: `${BUNDLE}: 4242\n` },
+    });
+    const h = await startIosRunner(UDID, deps({ run: run as any, probe: async (p) => (p === 50123 ? VERSION : undefined) }), {
+      foreground: "com.example.app",
+    });
+    expect(h.via).toBe("simctl");
+  });
+
   it("simctl launch silent for 30s: terminates it and falls back to xcodebuild test-without-building", async () => {
     const c = clock();
     const { run, calls } = fakeRun({

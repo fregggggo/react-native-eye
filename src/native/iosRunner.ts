@@ -32,6 +32,12 @@ export type StartOptions = {
    * still in flight. The same object is what the start resolves with.
    */
   onSpawn?: (h: RunnerHandle) => void;
+  /**
+   * The app under test. Launching the runner puts it in front, so iOS
+   * suspends that app and its Metro connection drops; a fresh start hands
+   * the foreground back to it (an already running app is not restarted).
+   */
+  foreground?: string;
 };
 
 export type IosRunnerDeps = {
@@ -198,6 +204,12 @@ function stderrTail(h: LongRunningHandle): string {
     .join(" | ");
 }
 
+/** Best effort: a hand-back that fails leaves the runner up all the same. */
+async function refocus(udid: string, app: string | undefined, d: IosRunnerDeps): Promise<void> {
+  if (!app) return;
+  await d.run("xcrun", ["simctl", "launch", udid, app], { timeoutMs: TIMEOUTS.launch }).catch(() => {});
+}
+
 /**
  * Brings up the iOS runner on a booted simulator (spec "Lifecycle — iOS"):
  * reuse a live one → install if needed → `simctl launch` (20s) → `xcodebuild
@@ -243,6 +255,7 @@ export async function startIosRunner(
     const m = /:\s*(\d+)\s*$/.exec(stdout.trim());
     pid = m ? Number(m[1]) : undefined;
     if ((await pollStatus(port, art.version, SIMCTL_WAIT_MS, d, undefined, signal)) === "ok") {
+      await refocus(udid, opts.foreground, d);
       return { port, pid, via: "simctl", stop: killRunner(udid, bundle, d) };
     }
     simctlOutcome = `no answer on port ${port} within ${SIMCTL_WAIT_MS / 1000}s`;
@@ -274,7 +287,10 @@ export async function startIosRunner(
   };
   opts.onSpawn?.(handle);
   const r = await pollStatus(port2, art.version, XCODEBUILD_WAIT_MS, d, () => h.exited(), signal);
-  if (r === "ok") return handle;
+  if (r === "ok") {
+    await refocus(udid, opts.foreground, d);
+    return handle;
+  }
   const tail = stderrTail(h);
   await h.stop().catch(() => {});
   if (r === "aborted") throw aborted();

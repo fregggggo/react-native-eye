@@ -37,16 +37,18 @@ function androidDriver(...devices: [serial: string, name: string][]) {
 // dead entry, which stays dead (with its reason) while it re-warms.
 function fakePool(opts: { before?: PoolEntryView; warm?: () => Promise<PoolEntryView> } = {}) {
   const warms: string[] = [];
+  const foregrounds: (string | undefined)[] = [];
   let current = opts.before;
   const pool = {
     view: () => current,
-    warm: (p: "ios" | "android", u: string) => {
+    warm: (p: "ios" | "android", u: string, o?: { foreground?: string }) => {
       warms.push(`${p}:${u}`);
+      foregrounds.push(o?.foreground);
       if (current?.state !== "dead") current = { state: "starting" };
       return opts.warm ? opts.warm() : new Promise<PoolEntryView>(() => {});
     },
   };
-  return { pool, warms };
+  return { pool, warms, foregrounds };
 }
 
 /** G14: the driver build's version per platform (the artifacts manifest in production). */
@@ -126,7 +128,14 @@ describe("connect warms the native driver", () => {
     const { pool, warms } = fakePool();
     const res = await connectWith({ drivers: [iosDriver(["SIM-1", "iPhone 17 Pro"])], pool });
     expect(warms).toEqual(["ios:SIM-1"]);
-    expect(res.content[0].text).toMatch(/\nnative driver: starting in background \(0\.0\.1-6ee5255e\) — until it is ready, taps, swipes and layout use axe\.$/);
+    expect(res.content[0].text).toMatch(/\nnative driver: starting in background \(0\.0\.1-6ee5255e\) — OS taps, swipes and layout wait for it \(up to 45 s\), then use axe\.$/);
+  });
+
+  it("tells the driver which app to keep in front: the target's appId", async () => {
+    await demoMetro({ id: "t", title: "Demo", appId: "com.example.demo" });
+    const { pool, foregrounds } = fakePool();
+    await connectWith({ drivers: [iosDriver(["SIM-1", "iPhone 17 Pro"])], pool });
+    expect(foregrounds).toEqual(["com.example.demo"]);
   });
 
   it("reports a live runner found at once as reused", async () => {
@@ -200,7 +209,7 @@ describe("connect warms the native driver", () => {
     getRegistry().reset();
     const starting = fakePool();
     const r2 = await connectWith({ drivers: [iosDriver(["SIM-1", "iPhone 17 Pro"])], pool: starting.pool, driverVersion: () => undefined });
-    expect(r2.content[0].text).toMatch(/\nnative driver: starting in background — until it is ready/);
+    expect(r2.content[0].text).toMatch(/\nnative driver: starting in background — OS taps, swipes and layout wait for it/);
   });
 
   it("reports a warm-up that throws as unavailable, and connect still succeeds", async () => {

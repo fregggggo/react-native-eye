@@ -92,3 +92,39 @@ describe("NativePath (android parameters)", () => {
     expect(fallbackReason(undefined)).toBe("runner starting");
   });
 });
+
+// The iOS runner comes up in front of the app: an axe gesture sent during the
+// start lands on the runner, not the app, and is reported as delivered.
+describe("NativePath with a start wait (iOS)", () => {
+  it("waits for a start in flight, then uses the runner", async () => {
+    let ready: NativeBackend | undefined;
+    let finish!: () => void;
+    const inflight = new Promise<PoolEntryView>((r) => (finish = () => r({ state: "ready", via: "simctl" })));
+    const pool = {
+      get: () => ready,
+      view: (): PoolEntryView => (ready ? { state: "ready", via: "simctl" } : { state: "starting" }),
+      markDead: () => {},
+      markFailed: () => {},
+      settled: () => (ready ? undefined : inflight),
+    };
+    const np = new NativePath(pool, "ios", "iOS runner", "axe", 1_000);
+    let fellBack = false;
+    const res = np.gesture("U", "tap", async () => {}, async () => void (fellBack = true));
+    ready = { platform: "ios" } as unknown as NativeBackend;
+    finish();
+    expect(await res).toEqual({ path: "runner" });
+    expect(fellBack).toBe(false);
+  });
+
+  it("falls back as before when the start is still in flight after the wait", async () => {
+    const pool = {
+      get: () => undefined,
+      view: (): PoolEntryView => ({ state: "starting" }),
+      markDead: () => {},
+      markFailed: () => {},
+      settled: () => new Promise<PoolEntryView>(() => {}),
+    };
+    const np = new NativePath(pool, "ios", "iOS runner", "axe", 10);
+    expect(await np.gesture("U", "tap", async () => {}, async () => {})).toEqual({ path: "axe", reason: "runner starting" });
+  });
+});

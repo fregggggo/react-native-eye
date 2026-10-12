@@ -65,6 +65,17 @@ describe("NativePool", () => {
     expect(va).toMatchObject({ state: "ready", via: "reused" });
   });
 
+  it("passes the app to keep in front to the iOS start, and remembers it for a later re-warm", async () => {
+    const { pool, startIos } = makePool();
+    await pool.warm("ios", "SIM-1", { foreground: "com.example.app" });
+    expect(startIos).toHaveBeenLastCalledWith("SIM-1", expect.objectContaining({ foreground: "com.example.app" }));
+    const backend = pool.get("ios", "SIM-1")!;
+    pool.markDead("ios", "SIM-1", "refused", backend);
+    await pool.settled("ios", "SIM-1");
+    expect(startIos).toHaveBeenCalledTimes(2);
+    expect(startIos).toHaveBeenLastCalledWith("SIM-1", expect.objectContaining({ foreground: "com.example.app" }));
+  });
+
   it("keys entries by platform and udid", async () => {
     const { pool, startIos } = makePool();
     await Promise.all([pool.warm("ios", "SIM-1"), pool.warm("ios", "SIM-2")]);

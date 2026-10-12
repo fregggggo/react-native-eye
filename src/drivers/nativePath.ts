@@ -27,12 +27,24 @@ export function messageOf(err: unknown): string {
  * runner", "Android server"); `fallbackPath` is the OS path used instead.
  */
 export class NativePath {
+  /**
+   * `startWaitMs`: OS gestures and layout wait (at most this long) for a start
+   * in flight instead of falling back at once. The iOS runner comes up in front
+   * of the app, so an axe tap sent during its start lands on the runner and is
+   * still reported as delivered.
+   */
   constructor(
     private pool: RunnerPool,
     private platform: "ios" | "android",
     private label: string,
     private fallbackPath: "axe" | "adb",
+    private startWaitMs?: number,
   ) {}
+
+  /** backendFor, or backendAfterStart when this path waits for starts. */
+  async backendForOs(id: string): Promise<{ backend?: NativeBackend; reason?: string }> {
+    return this.startWaitMs ? this.backendAfterStart(id, this.startWaitMs) : this.backendFor(id);
+  }
 
   backendFor(id: string): { backend?: NativeBackend; reason?: string } {
     const backend = this.pool.get(this.platform, id);
@@ -122,7 +134,7 @@ export class NativePath {
     viaRunner: (b: NativeBackend) => Promise<void>,
     viaFallback: (why?: string) => Promise<void>,
   ): Promise<OsPath> {
-    const { backend, reason } = this.backendFor(id);
+    const { backend, reason } = await this.backendForOs(id);
     let why = reason;
     if (backend) {
       try {

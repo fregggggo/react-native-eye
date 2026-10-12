@@ -5,6 +5,7 @@ import { text } from "../core/format.js";
 import { ConnectionError, DriverError, toToolError } from "../core/errors.js";
 import { activeDriver, deviceById, deviceLabel, normalizeDeviceName } from "../drivers/resolve.js";
 import type { DeviceDriver } from "../drivers/types.js";
+import { IOS_START_WAIT_MS } from "../drivers/ios.js";
 import { sharedPool, type NativePool, type PoolEntryView } from "../native/pool.js";
 import { androidArtifact, iosArtifact } from "../native/artifacts.js";
 
@@ -62,7 +63,7 @@ const messageOf = (err: unknown): string => (err instanceof Error ? err.message 
  * never waits for a start: connect must succeed whatever the driver does.
  */
 export async function nativeDriverLine(
-  target: { device?: string; boundTo?: string },
+  target: { device?: string; boundTo?: string; appId?: string },
   opts: ConnectionToolOpts = {},
 ): Promise<string> {
   let platform: "ios" | "android";
@@ -92,7 +93,7 @@ export async function nativeDriverLine(
   if (pool.view(platform, udid)?.state === "ready") return `native driver: ready${tag("reused")}`;
 
   // Not awaited beyond the peek: warm() keeps going in the background.
-  const started = pool.warm(platform, udid).then(
+  const started = pool.warm(platform, udid, { foreground: target.appId }).then(
     (v) => v,
     (err: unknown): PoolEntryView => ({ state: "failed", reason: messageOf(err) }),
   );
@@ -108,7 +109,11 @@ export async function nativeDriverLine(
   if (peek?.state === "failed") return unavailable(peek.reason);
   const now = pool.view(platform, udid);
   const state = now?.state === "dead" ? "restarting in background" : "starting in background";
-  return `native driver: ${state}${tag()} — until it is ready, taps, swipes and layout use ${platform === "ios" ? "axe" : "adb"}.`;
+  // iOS OS gestures and layout wait for the start (the runner is in front of
+  // the app meanwhile); Android ones use adb until the server is up.
+  return platform === "ios"
+    ? `native driver: ${state}${tag()} — OS taps, swipes and layout wait for it (up to ${IOS_START_WAIT_MS / 1000} s), then use axe.`
+    : `native driver: ${state}${tag()} — until it is ready, taps, swipes and layout use adb.`;
 }
 
 /**
@@ -199,7 +204,7 @@ export function registerConnectionTools(server: McpServer, opts: ConnectionToolO
         // Warm the on-device runner for the device this app runs on; the
         // resolution is the same one every device tool makes, so the runner
         // that warms is the one the next tap uses.
-        const native = await nativeDriverLine({ device: picked?.udid ?? device, boundTo: conn.meta.deviceName }, opts);
+        const native = await nativeDriverLine({ device: picked?.udid ?? device, boundTo: conn.meta.deviceName, appId: conn.meta.appId }, opts);
         const twins = picked?.note ? `\n${picked.note}` : "";
         return text(
           `Connected to "${conn.meta.title}"${where} (port ${conn.meta.port}, target ${conn.meta.targetId}).${stale}${errHook}${twins}\n${native}`,

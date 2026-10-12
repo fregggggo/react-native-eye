@@ -28,6 +28,8 @@ type Entry = {
    */
   backend?: NativeBackend;
   handle?: AnyHandle;
+  /** The app to bring back to the front after an iOS start; the last one warm() was given. */
+  foreground?: string;
   /** The one start in flight; every concurrent warm() shares it. */
   inflight?: Promise<PoolEntryView>;
 };
@@ -174,8 +176,9 @@ export class NativePool {
    * `async` on purpose: the entry is updated and startIos is called before
    * this returns, so a get() right after sees `starting`.
    */
-  warm(platform: Platform, udid: string): Promise<PoolEntryView> {
+  warm(platform: Platform, udid: string, opts: { foreground?: string } = {}): Promise<PoolEntryView> {
     const key = this.key(platform, udid);
+    if (opts.foreground) this.entry(key).foreground = opts.foreground;
     // A tool call during the shutdown grace window must not launch anything.
     if (this.closed) return Promise.resolve(this.setFailed(this.entry(key), SHUT_DOWN));
     if (this.env.RNE_NATIVE_DRIVER === "off") return this.disabled(key, platform, udid);
@@ -232,7 +235,7 @@ export class NativePool {
     try {
       started =
         platform === "ios"
-          ? this.startIos(udid, { signal: this.abort.signal, onSpawn })
+          ? this.startIos(udid, { signal: this.abort.signal, onSpawn, foreground: e.foreground })
           : this.startAndroid(udid, { signal: this.abort.signal, onSpawn });
     } catch (err) {
       started = Promise.reject(err);
