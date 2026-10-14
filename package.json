@@ -1,7 +1,7 @@
 {
   "name": "react-native-eye",
   "version": "0.1.0",
-  "mcpName": "io.github.Mokutte/react-native-eye",
+  "mcpName": "io.github.fregggggo/react-native-eye",
   "description": "Safe, fast MCP server giving AI agents eyes into a running React Native app.",
   "type": "module",
   "bin": { "react-native-eye": "./build/index.js" },
@@ -9,9 +9,9 @@
   "files": ["build", "NOTICE", "native/LICENSE-APACHE", "native/ios-runner/THIRD_PARTY.md", "native/android-server/THIRD_PARTY.md", "native/android-server/licenses", "!build/**/*.map"],
   "engines": { "node": ">=18.0.0" },
   "license": "MIT",
-  "repository": { "type": "git", "url": "git+https://github.com/Mokutte/react-native-eye.git" },
+  "repository": { "type": "git", "url": "git+https://github.com/fregggggo/react-native-eye.git" },
   "homepage": "https://react-native-eye.com",
-  "bugs": { "url": "https://github.com/Mokutte/react-native-eye/issues" },
+  "bugs": { "url": "https://github.com/fregggggo/react-native-eye/issues" },
   "scripts": {
     "build": "tsc && chmod 755 build/index.js",
     "start": "node build/index.js",

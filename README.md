@@ -13,7 +13,7 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/react-native-eye"><img alt="npm version" src="https://img.shields.io/npm/v/react-native-eye?color=61DAFB"></a>
-  <a href="https://github.com/Mokutte/react-native-eye/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Mokutte/react-native-eye/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/fregggggo/react-native-eye/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/fregggggo/react-native-eye/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="MIT license" src="https://img.shields.io/badge/license-MIT-61DAFB">
   <img alt="Node 18 or newer" src="https://img.shields.io/badge/node-%E2%89%A5%2018-61DAFB">
   <img alt="iOS and Android" src="https://img.shields.io/badge/platforms-iOS%20%7C%20Android-61DAFB">
