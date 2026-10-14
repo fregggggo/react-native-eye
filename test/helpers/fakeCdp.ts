@@ -106,6 +106,9 @@ export async function startFakeMetro(opts: {
       new Promise<void>((resolve) => {
         for (const ws of clients) ws.close();
         wss.close(() => http.close(() => resolve()));
+        // Node 18's close() waits out keep-alive sockets (/json/list fetches);
+        // 19+ drops idle ones itself.
+        http.closeIdleConnections?.();
       }),
   };
 }
