@@ -212,9 +212,16 @@ describe("device tools", () => {
         return { stdout: "", stdoutBuffer: Buffer.from(""), stderr: "" };
       }) as any,
     });
-    const res = await callTool(server, "open_simulator", {});
-    expect(res.isError).toBeFalsy();
-    expect(calls).toContain("open -a Simulator");
+    // open_simulator is macOS-only; pin the host so the test runs anywhere (CI is Linux).
+    const hostPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    try {
+      const res = await callTool(server, "open_simulator", {});
+      expect(res.isError).toBeFalsy();
+      expect(calls).toContain("open -a Simulator");
+    } finally {
+      Object.defineProperty(process, "platform", { value: hostPlatform });
+    }
   });
 });
 

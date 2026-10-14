@@ -12,11 +12,16 @@ import type { DeviceDriver } from "../../src/drivers/types.js";
 import { AXE, axeLayout } from "../helpers/osPath.js";
 
 let metro: FakeMetro;
+// The downscaler chain starts with sips on a macOS host; the suite runs as
+// one wherever it runs (CI is Linux), and the non-macOS test sets its own.
+const hostPlatform = process.platform;
 beforeEach(() => {
+  Object.defineProperty(process, "platform", { value: "darwin" });
   getRegistry().reset();
   __resetDownscalerAvailabilityForTests();
 });
 afterEach(async () => {
+  Object.defineProperty(process, "platform", { value: hostPlatform });
   getRegistry().reset();
   await metro?.close();
 });
