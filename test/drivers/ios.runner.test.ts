@@ -202,18 +202,18 @@ describe.each(GESTURES)("IosDriver.$name through the runner", (g) => {
 });
 
 describe("IosDriver.typeText guards only the axe branch", () => {
-  it("types Cyrillic through the runner under a Russian host layout without reading the layout", async () => {
+  it("types non-ASCII text through the runner under a non-Latin host layout without reading the layout", async () => {
     let reads = 0;
     const b = fakeBackend();
     const { d, calls } = setup({
       backend: b.backend,
       layout: async () => {
         reads++;
-        return "com.apple.keylayout.RussianWin";
+        return "com.apple.keylayout.Greek";
       },
     });
-    expect(await d.typeText("U", "привет 🎉")).toEqual({ path: "runner" });
-    expect(b.calls).toEqual(["inputText привет 🎉"]);
+    expect(await d.typeText("U", "こんにちは 🎉")).toEqual({ path: "runner" });
+    expect(b.calls).toEqual(["inputText こんにちは 🎉"]);
     expect(reads).toBe(0);
     expect(calls).toEqual([]);
   });
@@ -221,14 +221,14 @@ describe("IosDriver.typeText guards only the axe branch", () => {
   it("refuses non-ASCII once the runner refused the connection and axe would have to type it", async () => {
     const b = fakeBackend({ method: "inputText", kind: "refused" });
     const { d, axe, marks } = setup({ backend: b.backend });
-    await expect(d.typeText("U", "привет")).rejects.toThrow(/cannot type non-ASCII characters/);
+    await expect(d.typeText("U", "こんにちは")).rejects.toThrow(/cannot type non-ASCII characters/);
     expect(marks).toEqual(["dead ios U connect ECONNREFUSED 127.0.0.1:52000"]);
     expect(axe()).toEqual([]);
   });
 
   it("refuses a transliterating host layout while the runner is not ready", async () => {
-    const { d, axe } = setup({ view: STARTING, layout: async () => "com.apple.keylayout.RussianWin" });
-    await expect(d.typeText("U", "cat")).rejects.toThrow(/RussianWin/);
+    const { d, axe } = setup({ view: STARTING, layout: async () => "com.apple.keylayout.Greek" });
+    await expect(d.typeText("U", "cat")).rejects.toThrow(/Greek/);
     expect(axe()).toEqual([]);
   });
 });

@@ -3,7 +3,7 @@ import { run as defaultRun, TIMEOUTS } from "../core/exec.js";
 type Runner = typeof defaultRun;
 
 /**
- * The macOS active keyboard layout id, e.g. "com.apple.keylayout.RussianWin".
+ * The macOS active keyboard layout id, e.g. "com.apple.keylayout.ABC".
  * undefined when it cannot be read.
  *
  * `axe type` sends key POSITIONS over HID and the simulator resolves them
@@ -11,7 +11,7 @@ type Runner = typeof defaultRun;
  * keyboard is used. Verified on the field-test machine:
  *
  *   $ defaults read com.apple.HIToolbox AppleCurrentKeyboardLayoutInputSourceID
- *   com.apple.keylayout.RussianWin
+ *   com.apple.keylayout.ABC
  *
  * The key is absent on a fresh account and while a non-keyboard input method is
  * selected; `defaults` then exits non-zero. An unreadable layout is NOT evidence

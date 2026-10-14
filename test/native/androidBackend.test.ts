@@ -57,9 +57,9 @@ describe("AndroidServerBackend", () => {
       typed.push(`${serial}:${text}`);
     });
     await b.inputText("hello");
-    await b.inputText("Привет, hello");
+    await b.inputText("こんにちは, hello");
     expect(f.calls).toEqual([{ method: "POST", path: "/inputText", body: { text: "hello" }, timeoutMs: 5000 + 250 * 5 }]);
-    expect(typed).toEqual(["emulator-5554:Привет, hello"]);
+    expect(typed).toEqual(["emulator-5554:こんにちは, hello"]);
   });
 
   it("maps the other routes", async () => {

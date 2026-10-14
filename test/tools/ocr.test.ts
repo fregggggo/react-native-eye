@@ -167,8 +167,8 @@ describe("read_screen_text", () => {
     const { backend, seen } = fakeOcr();
     const server = makeServer();
     registerOcrTools(server, { drivers: [ios()], ocr: backend });
-    await read(server, { languages: ["ru", "en"] });
-    expect(seen[0].languages).toEqual(["ru", "en"]);
+    await read(server, { languages: ["de", "en"] });
+    expect(seen[0].languages).toEqual(["de", "en"]);
   });
 
   it("turns a backend failure into a tool error", async () => {

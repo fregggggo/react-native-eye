@@ -122,7 +122,7 @@ describe.skipIf(!serial)("Android server on a real device", () => {
     await backend.pressKey("back");
   });
 
-  it("types Cyrillic and emoji through the IME and gives the keyboard back", async () => {
+  it("types non-ASCII text and emoji through the IME and gives the keyboard back", async () => {
     await adb(["shell", "am", "start", "-W", "-n", "dev.rneye.server/.ProbeActivity"]);
     const before = await currentIme();
     expect(before).not.toBe(RNE_IME);
@@ -130,8 +130,8 @@ describe.skipIf(!serial)("Android server on a real device", () => {
     await backend.touch(input.x, input.y);
     const existing = (await probeText("probe_input")) ?? "";
     if (existing && existing !== "rne probe input") await backend.eraseText([...existing].length);
-    await backend.inputText("Привет, мир 👋");
-    expect(await until("cyrillic", async () => ((await probeText("probe_input"))?.includes("Привет, мир 👋") ? true : undefined), 5000)).toBe(true);
+    await backend.inputText("こんにちは, 世界 👋");
+    expect(await until("unicode", async () => ((await probeText("probe_input"))?.includes("こんにちは, 世界 👋") ? true : undefined), 5000)).toBe(true);
     expect(await currentIme()).toBe(before);
   });
 

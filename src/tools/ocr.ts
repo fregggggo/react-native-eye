@@ -76,7 +76,7 @@ export function registerOcrTools(
     {
       title: "Read screen text",
       description:
-        "Read the visible text off the screen with on-host OCR (Apple Vision). Works without a Metro connection and sees text the layout tree cannot: images, canvases, WebViews, native dialogs. Returns one line per recognized text run as `<text> @x,y` — x,y is the centre in tap units and can be passed straight to tap {x,y}. Lines that also exist in the app's JS layout are marked [tree]: prefer tap {text} for those, since an OCR box is just text, not a control. Optional: search (substring filters, case-insensitive), languages (e.g. [\"ru\",\"en\"]; auto-detected by default), compare_tree (default true). macOS host only; the first call compiles a small Vision helper (~10–30s, cached).",
+        "Read the visible text off the screen with on-host OCR (Apple Vision). Works without a Metro connection and sees text the layout tree cannot: images, canvases, WebViews, native dialogs. Returns one line per recognized text run as `<text> @x,y` — x,y is the centre in tap units and can be passed straight to tap {x,y}. Lines that also exist in the app's JS layout are marked [tree]: prefer tap {text} for those, since an OCR box is just text, not a control. Optional: search (substring filters, case-insensitive), languages (e.g. [\"de\",\"en\"]; auto-detected by default), compare_tree (default true). macOS host only; the first call compiles a small Vision helper (~10–30s, cached).",
       inputSchema: {
         search: z.array(z.string()).optional(),
         languages: z.array(z.string()).optional(),

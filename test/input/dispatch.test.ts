@@ -269,16 +269,16 @@ describe("dispatchType", () => {
   });
 
   it("fails loudly when the field does not read back what was sent", async () => {
-    // Measured: "cat" through axe type arrived as "сф" under a Russian host
+    // "cat" through axe type arrives as other characters under a non-Latin host
     // keyboard layout, and today that returns as success.
     const { driver } = fakeDriver();
     const conn = fakeConn({
       type: { typed: true, matched: { placeholder: "Search", controlled: true } },
-      read: [{ found: true, value: "сф" }],
+      read: [{ found: true, value: "ψατ" }],
     });
     await expect(
       dispatchType({ driver, udid: "U", value: "cat", via: "auto", conn: conn as any, verify: true }),
-    ).rejects.toThrow(/Typed "cat" but the field now reads "сф" — the text was corrupted in transit\./);
+    ).rejects.toThrow(/Typed "cat" but the field now reads "ψατ" — the text was corrupted in transit\./);
   });
 
   it("succeeds and names the JS path when the read-back matches", async () => {
@@ -296,7 +296,7 @@ describe("dispatchType", () => {
 
   it("verifies the OS path too — that is the path that corrupts", async () => {
     const { typed, driver } = fakeDriver();
-    const conn = fakeConn({ read: [{ found: true, value: "сф" }] });
+    const conn = fakeConn({ read: [{ found: true, value: "ψατ" }] });
     await expect(
       dispatchType({ driver, udid: "U", value: "cat", via: "os", conn: conn as any, verify: true }),
     ).rejects.toThrow(/corrupted in transit/);

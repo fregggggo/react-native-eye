@@ -80,7 +80,7 @@ describe("isKeyCodeText", () => {
   it("is true for printable ASCII only", () => {
     expect(isKeyCodeText("Hello, world! ~_{}")).toBe(true);
     expect(isKeyCodeText("")).toBe(true);
-    expect(isKeyCodeText("Привет")).toBe(false);
+    expect(isKeyCodeText("こんにちは")).toBe(false);
     expect(isKeyCodeText("café")).toBe(false);
     expect(isKeyCodeText("line\nbreak")).toBe(false);
     expect(isKeyCodeText("👋")).toBe(false);
@@ -89,7 +89,7 @@ describe("isKeyCodeText", () => {
 
 describe("chunkText", () => {
   it("keeps short text whole", () => {
-    expect(chunkText("Привет")).toEqual(["Привет"]);
+    expect(chunkText("こんにちは")).toEqual(["こんにちは"]);
   });
   it("splits at the UTF-16 limit without cutting a surrogate pair", () => {
     const text = "a".repeat(999) + "👋" + "b";
@@ -104,7 +104,7 @@ describe("chunkText", () => {
 describe("typeWithIme", () => {
   it("selects our IME, waits for it, commits base64url text, then restores the user's IME and disables ours", async () => {
     const f = fakeDeps({ status: [NOT_READY, NOBODY, OK] });
-    await typeWithIme("emulator-5554", "Привет 👋", f.deps);
+    await typeWithIme("emulator-5554", "こんにちは 👋", f.deps);
     const s = f.shell();
     expect(f.calls.every((c) => c[0] === "emulator-5554")).toBe(true);
     expect(s[0]).toBe("shell settings get secure default_input_method");
@@ -116,7 +116,7 @@ describe("typeWithIme", () => {
     expect(commit).toContain("-n dev.rneye.server/.receivers.UnicodeInputReceiver");
     expect(s.filter((l) => l.includes("ime.status")).every((l) => l.includes("-f 0x20 -n dev.rneye.server/.receivers.UnicodeInputReceiver"))).toBe(true);
     const b64 = commit.split(" ").at(-1)!;
-    expect(Buffer.from(b64, "base64url").toString("utf8")).toBe("Привет 👋");
+    expect(Buffer.from(b64, "base64url").toString("utf8")).toBe("こんにちは 👋");
     expect(b64).not.toMatch(/[+/=]/);
     expect(s.slice(-2)).toEqual([`shell ime set ${q(GBOARD)}`, `shell ime disable ${RNE_IME}`]);
     expect(f.current()).toBe(GBOARD);
@@ -124,7 +124,7 @@ describe("typeWithIme", () => {
 
   it("records the keyboard to restore on the host before selecting ours, and forgets it once restored", async () => {
     const f = fakeDeps({});
-    await typeWithIme("S", "ё", f.deps);
+    await typeWithIme("S", "é", f.deps);
     const write = f.log.indexOf(`marker write ${GBOARD}`);
     expect(write).toBeGreaterThanOrEqual(0);
     expect(write).toBeLessThan(f.log.indexOf(`shell ime set ${RNE_IME}`));
@@ -134,13 +134,13 @@ describe("typeWithIme", () => {
 
   it("quotes the restore target for the device shell", async () => {
     const f = fakeDeps({ current: NESTED });
-    await typeWithIme("S", "ё", f.deps);
+    await typeWithIme("S", "é", f.deps);
     expect(f.shell()).toContain(`shell ime set '${NESTED}'`);
   });
 
   it("treats result=0 as not ready (an ordered broadcast nobody receives also ends with 0)", async () => {
     const f = fakeDeps({ status: [NOBODY] });
-    const e = await typeWithIme("S", "Привет", f.deps).catch((x) => x);
+    const e = await typeWithIme("S", "こんにちは", f.deps).catch((x) => x);
     expect(e).toBeInstanceOf(NativeCallError);
     expect((e as NativeCallError).kind).toBe("rejected");
     expect((e as NativeCallError).message).toMatch(/did not become active within 5s/);
@@ -149,7 +149,7 @@ describe("typeWithIme", () => {
 
   it("restores the IME when the commit fails and reports the receiver's reason", async () => {
     const f = fakeDeps({ commit: 'Broadcast completed: result=1, data="commitText returned false"' });
-    const e = (await typeWithIme("S", "Привет", f.deps).catch((x) => x)) as NativeCallError;
+    const e = (await typeWithIme("S", "こんにちは", f.deps).catch((x) => x)) as NativeCallError;
     expect(e.kind).toBe("rejected");
     expect(e.message).toMatch(/commitText returned false/);
     expect(f.current()).toBe(GBOARD);
@@ -158,32 +158,32 @@ describe("typeWithIme", () => {
 
   it("restores the first other enabled IME when ours is selected and nothing was recorded", async () => {
     const f = fakeDeps({ current: RNE_IME, list: `${RNE_IME}\n${GBOARD}\n` });
-    await typeWithIme("S", "ё", f.deps);
+    await typeWithIme("S", "é", f.deps);
     expect(f.current()).toBe(GBOARD);
   });
 
   it("restores the keyboard a dead host recorded, not merely the first enabled one", async () => {
     const f = fakeDeps({ current: RNE_IME, marker: SWIFTKEY, list: `${GBOARD}\n${RNE_IME}\n${SWIFTKEY}\n` });
-    await typeWithIme("S", "ё", f.deps);
+    await typeWithIme("S", "é", f.deps);
     expect(f.current()).toBe(SWIFTKEY);
     expect(f.marker()).toBeUndefined();
   });
 
   it("ignores a recorded keyboard that is no longer enabled", async () => {
     const f = fakeDeps({ current: RNE_IME, marker: SWIFTKEY, list: `${GBOARD}\n${RNE_IME}\n` });
-    await typeWithIme("S", "ё", f.deps);
+    await typeWithIme("S", "é", f.deps);
     expect(f.current()).toBe(GBOARD);
   });
 
   it("sends one commit per chunk", async () => {
     const f = fakeDeps({});
-    await typeWithIme("S", "я".repeat(2500), f.deps);
+    await typeWithIme("S", "é".repeat(2500), f.deps);
     expect(f.shell().filter((l) => l.includes("commitText"))).toHaveLength(3);
   });
 
   it("turns an adb failure into rejected and still restores", async () => {
     const f = fakeDeps({ failOn: "ime enable" });
-    const e = (await typeWithIme("S", "ё", f.deps).catch((x) => x)) as NativeCallError;
+    const e = (await typeWithIme("S", "é", f.deps).catch((x) => x)) as NativeCallError;
     expect(e).toBeInstanceOf(NativeCallError);
     expect(e.kind).toBe("rejected");
     expect(f.shell()).toContain(`shell ime set ${q(GBOARD)}`);
@@ -191,7 +191,7 @@ describe("typeWithIme", () => {
 
   it("reports a failed restore after a successful commit, naming the command to fix it, and keeps the record", async () => {
     const f = fakeDeps({ failOn: `ime set ${q(GBOARD)}` });
-    const e = (await typeWithIme("S", "ё", f.deps).catch((x) => x)) as NativeCallError;
+    const e = (await typeWithIme("S", "é", f.deps).catch((x) => x)) as NativeCallError;
     expect(e.kind).toBe("rejected");
     expect(e.message).toMatch(/typed, but could not restore the keyboard/);
     expect(e.message).toContain(`adb -s S shell ime set ${GBOARD}`);
@@ -201,13 +201,13 @@ describe("typeWithIme", () => {
 
   it("the paste-able fix command survives both the host shell and the device shell", async () => {
     const f = fakeDeps({ current: NESTED, failOn: "ime set 'com.oem" });
-    const e = (await typeWithIme("S", "ё", f.deps).catch((x) => x)) as NativeCallError;
+    const e = (await typeWithIme("S", "é", f.deps).catch((x) => x)) as NativeCallError;
     expect(e.message).toContain(`adb -s S shell 'ime set '\\''${NESTED}'\\'''`);
   });
 
   it("says our keyboard is still selected when both the typing and the restore failed", async () => {
     const f = fakeDeps({ status: [NOBODY], failOn: `ime set ${q(GBOARD)}` });
-    const e = (await typeWithIme("S", "ё", f.deps).catch((x) => x)) as NativeCallError;
+    const e = (await typeWithIme("S", "é", f.deps).catch((x) => x)) as NativeCallError;
     expect(e.kind).toBe("rejected");
     expect(e.message).toMatch(/did not become active within 5s/);
     expect(e.message).toMatch(/RNEye keyboard is also still selected/);
@@ -216,7 +216,7 @@ describe("typeWithIme", () => {
 
   it("types, then says so when no other keyboard is enabled to switch back to", async () => {
     const f = fakeDeps({ current: RNE_IME, list: `${RNE_IME}\n` });
-    const e = (await typeWithIme("S", "ё", f.deps).catch((x) => x)) as NativeCallError;
+    const e = (await typeWithIme("S", "é", f.deps).catch((x) => x)) as NativeCallError;
     expect(e).toBeInstanceOf(NativeCallError);
     expect(e.kind).toBe("rejected");
     expect(e.message).toMatch(/typed, but no other keyboard is enabled to switch back to/);
@@ -227,7 +227,7 @@ describe("typeWithIme", () => {
 
   it("keeps the original failure when there is also nothing to restore", async () => {
     const f = fakeDeps({ current: "null", list: "", status: [NOBODY] });
-    const e = (await typeWithIme("S", "ё", f.deps).catch((x) => x)) as NativeCallError;
+    const e = (await typeWithIme("S", "é", f.deps).catch((x) => x)) as NativeCallError;
     expect(e.message).toMatch(/did not become active within 5s/);
   });
 
@@ -235,8 +235,8 @@ describe("typeWithIme", () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
     const f = fakeDeps({ gate: { on: "commitText", wait: gate } });
-    const first = typeWithIme("serial-queue", "раз", f.deps);
-    const second = typeWithIme("serial-queue", "два", f.deps);
+    const first = typeWithIme("serial-queue", "一", f.deps);
+    const second = typeWithIme("serial-queue", "二", f.deps);
     await new Promise((r) => setTimeout(r, 5));
     // The first is parked on its commit; the second has not started.
     expect(f.log.filter((l) => l.includes("default_input_method"))).toHaveLength(1);
@@ -251,9 +251,9 @@ describe("typeWithIme", () => {
 
   it("a failed call does not block the next one on the same device", async () => {
     const bad = fakeDeps({ failOn: "ime enable" });
-    await typeWithIme("serial-fail", "ё", bad.deps).catch(() => {});
+    await typeWithIme("serial-fail", "é", bad.deps).catch(() => {});
     const ok = fakeDeps({});
-    await expect(typeWithIme("serial-fail", "ё", ok.deps)).resolves.toBeUndefined();
+    await expect(typeWithIme("serial-fail", "é", ok.deps)).resolves.toBeUndefined();
   });
 });
 
@@ -289,7 +289,7 @@ describe("repairIme", () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
     const f = fakeDeps({ gate: { on: "commitText", wait: gate } });
-    const typing = typeWithIme("serial-repair", "ё", f.deps);
+    const typing = typeWithIme("serial-repair", "é", f.deps);
     const repair = repairIme("serial-repair", f.deps);
     await new Promise((r) => setTimeout(r, 5));
     expect(f.log.filter((l) => l.includes("default_input_method"))).toHaveLength(1);

@@ -15,8 +15,8 @@ function stubRunner(result: { stdout?: string; throws?: Error }) {
 
 describe("activeKeyboardLayout", () => {
   it("reads the id out of defaults and trims the trailing newline", async () => {
-    const { calls, runner } = stubRunner({ stdout: "com.apple.keylayout.RussianWin\n" });
-    expect(await activeKeyboardLayout(runner)).toBe("com.apple.keylayout.RussianWin");
+    const { calls, runner } = stubRunner({ stdout: "com.apple.keylayout.Greek\n" });
+    expect(await activeKeyboardLayout(runner)).toBe("com.apple.keylayout.Greek");
     expect(calls).toEqual([
       {
         cmd: "defaults",
@@ -56,8 +56,8 @@ describe("isAsciiSafeLayout", () => {
     expect(isAsciiSafeLayout("com.apple.keylayout.ABC-AZERTY")).toBe(true);
   });
 
-  it("refuses RussianWin, the layout that produced the defect", () => {
-    expect(isAsciiSafeLayout("com.apple.keylayout.RussianWin")).toBe(false);
+  it("refuses a non-Latin layout (Greek)", () => {
+    expect(isAsciiSafeLayout("com.apple.keylayout.Greek")).toBe(false);
   });
 
   it("denies by default — an unlisted layout is unsafe", () => {

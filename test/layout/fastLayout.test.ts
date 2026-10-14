@@ -536,19 +536,19 @@ describe("tap point and noise", () => {
       children: [
         {
           type: "RCTView",
-          props: { children: [{ props: { children: "Подписки" } }, { props: { children: "Для вас" } }] },
+          props: { children: [{ props: { children: "Following" } }, { props: { children: "For you" } }] },
           rect: { x: 0, y: 60, w: 400, h: 48 },
           children: [
-            { type: "RCTText", props: { children: "Подписки" }, rect: { x: 0, y: 60, w: 100, h: 48 } },
-            { type: "RCTText", props: { children: "Для вас" }, rect: { x: 120, y: 60, w: 100, h: 48 } },
+            { type: "RCTText", props: { children: "Following" }, rect: { x: 0, y: 60, w: 100, h: 48 } },
+            { type: "RCTText", props: { children: "For you" }, rect: { x: 120, y: 60, w: 100, h: 48 } },
           ],
         },
       ],
     });
     const out = await capture(tree, true);
-    const glued = out.els.find((e: any) => e.text === "ПодпискиДля вас");
+    const glued = out.els.find((e: any) => e.text === "FollowingFor you");
     expect(glued.container).toBe(true);
-    expect(out.els.find((e: any) => e.text === "Подписки").container).toBeUndefined();
+    expect(out.els.find((e: any) => e.text === "Following").container).toBeUndefined();
   });
 
   it("flags a wrapper that borrowed its only child's text", async () => {

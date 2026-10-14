@@ -215,7 +215,7 @@ export class IosDriver implements DeviceDriver {
     if (!isAsciiSafeLayout(layout)) {
       throw new DriverError(
         `The Mac's active keyboard layout is ${layout}. \`axe type\` sends key positions, so the ` +
-          `simulator would receive transliterated text (typing "cat" under RussianWin produces "сф"). ` +
+          `simulator would receive different characters than the ones sent. ` +
           `Switch the host layout to ABC/U.S., or use via: "js" to bypass the keyboard entirely.`,
       );
     }

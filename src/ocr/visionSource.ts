@@ -53,7 +53,7 @@ request.usesLanguageCorrection = true
 if languages.isEmpty {
     if #available(macOS 13.0, *) { request.automaticallyDetectsLanguage = true }
 } else {
-    // Accept "ru" as well as "ru-RU": resolve each request against what Vision supports.
+    // Accept "de" as well as "de-DE": resolve each request against what Vision supports.
     let supported = (try? request.supportedRecognitionLanguages()) ?? []
     var resolved: [String] = []
     for want in languages {

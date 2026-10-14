@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installs the built server on one device, starts it, exercises every route, types Cyrillic
+# Installs the built server on one device, starts it, exercises every route, types non-ASCII
 # through the IME and restores the keyboard, and checks the security boundary (review I1/M1/M5):
 # no TCP listener, another uid cannot connect to the socket or send the IME broadcast, HTTP
 # guards. Usage: scripts/smoke-android-server.sh <serial>
@@ -63,7 +63,7 @@ grep -q 'bounds="\[0,0\]\[0,0\]"' <<<"$TOAST" && { echo "toast has empty bounds"
 step "inputText ASCII"; J /inputText '{"text":"Hello 42!"}'
 grep -qF 'Hello 42!' <<<"$(HX)" || { echo "ASCII text not typed"; exit 1; }
 step "inputText non-ASCII -> 400"
-curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/json' -d '{"text":"Привет"}' "http://127.0.0.1:$PORT/inputText" | grep -q 400
+curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/json' -d '{"text":"こんにちは"}' "http://127.0.0.1:$PORT/inputText" | grep -q 400
 step "POST without JSON content type -> 415"
 curl -s -o /dev/null -w '%{http_code}\n' -X POST -d '{}' "http://127.0.0.1:$PORT/touch" | grep -q 415
 step "unknown route -> 404"
@@ -125,7 +125,7 @@ J /inputText '{"text":"Hello 42!"}' >/dev/null
 # IME round trip, the same steps androidIme.ts runs. The broadcast must be explicit (-n):
 # since Android 8 an implicit broadcast never reaches a manifest-declared receiver of an app
 # targeting API 26+, and `am broadcast` then just reports result=0.
-step "IME: Cyrillic + emoji"
+step "IME: non-ASCII + emoji"
 ORIG="$(A shell settings get secure default_input_method | tr -d '\r')"
 restore() { A shell ime set "$ORIG" >/dev/null 2>&1 || true; }
 trap 'restore; cleanup' EXIT
@@ -136,7 +136,7 @@ for i in $(seq 1 17); do
   A shell am broadcast -f 0x20 -n dev.rneye.server/.receivers.UnicodeInputReceiver -a dev.rneye.server.ime.status | grep -q 'result=-1' && { ready=1; break; }; sleep 0.3
 done
 [[ $ready == 1 ]] || { echo "IME never became ready"; exit 1; }
-B64="$(printf '%s' ' Привет 👋' | base64 | tr '+/' '-_' | tr -d '=\n')"
+B64="$(printf '%s' ' こんにちは 👋' | base64 | tr '+/' '-_' | tr -d '=\n')"
 A shell am broadcast -f 0x20 -n dev.rneye.server/.receivers.UnicodeInputReceiver -a dev.rneye.server.ime.commitText --es textBase64 "$B64" | grep -q 'result=-1' || { echo "IME commit failed"; exit 1; }
 sleep 0.25
 A shell ime set "$ORIG" >/dev/null
@@ -144,7 +144,7 @@ trap cleanup EXIT
 [[ "$(A shell settings get secure default_input_method | tr -d '\r')" == "$ORIG" ]] || { echo "IME not restored"; exit 1; }
 echo "keyboard restored to $ORIG"
 # The dump's XmlSerializer writes a supplementary character (the emoji) as a numeric reference.
-grep -qE 'text="Hello 42! Привет (👋|&#128075;)"' <<<"$(HX)" || { echo "Cyrillic not committed"; exit 1; }
+grep -qE 'text="Hello 42! こんにちは (👋|&#128075;)"' <<<"$(HX)" || { echo "Unicode not committed"; exit 1; }
 step eraseText; J /eraseText '{"charactersToErase":3}'
 step "pressKey back"; J /pressKey '{"key":"back"}'
 step "pressKey bogus -> 400"

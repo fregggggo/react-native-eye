@@ -65,7 +65,7 @@ describe("elementAtPoint visibility", () => {
     // The point is over a video; a label from an inactive tab measured there too.
     const els = [
       el("Video frame", 0, 0, 440, 800),
-      el("Профиль: Георгий", 12, 206, 416, 22, { hidden: true, hiddenBy: "covered" }),
+      el("Profile: Alex", 12, 206, 416, 22, { hidden: true, hiddenBy: "covered" }),
     ] as any;
     expect(elementAtPoint(els, 220, 217)!.text).toBe("Video frame");
   });

@@ -241,15 +241,15 @@ describe("tap point clipping", () => {
   });
 
   it("treats a hidden element as absent for expect/wait_for", () => {
-    const els = toElements([{ text: "Публикации", x: 0, y: 260, w: 200, h: 24, hidden: true }]);
-    expect(isPresent(els, { text: "Публикации" })).toBe(false);
+    const els = toElements([{ text: "Posts", x: 0, y: 260, w: 200, h: 24, hidden: true }]);
+    expect(isPresent(els, { text: "Posts" })).toBe(false);
   });
 
   it("explains that a match is on a hidden screen", () => {
     const els = toElements([
-      { text: "Публикации", x: 0, y: 260, w: 200, h: 24, hidden: true, hiddenBy: "covered" },
+      { text: "Posts", x: 0, y: 260, w: 200, h: 24, hidden: true, hiddenBy: "covered" },
     ]);
-    expect(() => findByText(els, "Публикации")).toThrow(/not visible.*covered by another view/s);
+    expect(() => findByText(els, "Posts")).toThrow(/not visible.*covered by another view/s);
   });
 
   // The listing shows an empty input under its placeholder, so that label is
@@ -278,13 +278,13 @@ describe("tap point clipping", () => {
 
   it("omits decorative and container entries from the listing but counts them", () => {
     const els = toElements([
-      { text: "Подписки", x: 0, y: 60, w: 100, h: 40 },
-      { text: "ПодпискиДля вас", x: 0, y: 60, w: 400, h: 40, container: true },
+      { text: "Following", x: 0, y: 60, w: 100, h: 40 },
+      { text: "FollowingFor you", x: 0, y: 60, w: 400, h: 40, container: true },
       { testID: "icon-heart", x: 10, y: 10, w: 20, h: 20, decorative: true },
     ]);
     const out = formatLayout(els);
-    expect(out).toContain("Подписки @50,80");
-    expect(out).not.toContain("ПодпискиДля вас");
+    expect(out).toContain("Following @50,80");
+    expect(out).not.toContain("FollowingFor you");
     expect(out).toContain("+2 decorative/container");
   });
 });

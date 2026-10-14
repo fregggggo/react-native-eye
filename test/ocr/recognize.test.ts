@@ -116,7 +116,7 @@ describe("recognizeScreen", () => {
 
   it("passes languages to the backend", async () => {
     const { backend: b, seen } = backend();
-    await recognizeScreen(driver({ screenScale: async () => 3 }), "u", { backend: b, languages: ["ru", "en"] });
-    expect(seen.opts?.languages).toEqual(["ru", "en"]);
+    await recognizeScreen(driver({ screenScale: async () => 3 }), "u", { backend: b, languages: ["de", "en"] });
+    expect(seen.opts?.languages).toEqual(["de", "en"]);
   });
 });

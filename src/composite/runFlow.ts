@@ -123,8 +123,8 @@ export async function runFlowInternal(
           into: toInputTarget(t.into),
           via: t.via ?? flowVia,
           conn,
-          // D2: axe typed "cat" under a Russian keyboard layout, the field
-          // received "сф", and the tool reported success. A flow is the last
+          // D2: axe typed "cat" under a non-Latin keyboard layout, the field
+          // received other characters, and the tool reported success. A flow is the last
           // place that should pass unnoticed, so read-back verification is not
           // switchable off here.
           verify: true,

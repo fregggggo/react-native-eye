@@ -82,8 +82,8 @@ describe("VisionOcr", () => {
   it("passes languages through to the helper", async () => {
     const { runner, calls } = fakeRunner();
     const ocr = new VisionOcr(runner, dir);
-    await ocr.recognize("/a.png", { languages: ["ru", "en"] });
-    expect(calls.at(-1)!.slice(1)).toEqual(["/a.png", "--languages", "ru,en"]);
+    await ocr.recognize("/a.png", { languages: ["de", "en"] });
+    expect(calls.at(-1)!.slice(1)).toEqual(["/a.png", "--languages", "de,en"]);
     await ocr.recognize("/b.png");
     expect(calls.at(-1)!.slice(1)).toEqual(["/b.png"]);
   });

@@ -270,15 +270,15 @@ describe("typeText guards the OS keyboard path", () => {
   it("refuses non-ASCII text without invoking axe", async () => {
     const { calls, runner } = recordingRunner();
     const d = new IosDriver(runner, undefined, usLayout);
-    await expect(d.typeText("U", "привет")).rejects.toThrow(/cannot type non-ASCII characters \("прив/);
+    await expect(d.typeText("U", "こんにちは")).rejects.toThrow(/cannot type non-ASCII characters \("こんにちは/);
     await expect(d.typeText("U", "🎉")).rejects.toThrow(/via: "js"/);
     expect(calls.filter((c) => c.cmd === "axe")).toEqual([]);
   });
 
   it("refuses under a transliterating layout, naming it, without invoking axe", async () => {
     const { calls, runner } = recordingRunner();
-    const d = new IosDriver(runner, undefined, async () => "com.apple.keylayout.RussianWin");
-    await expect(d.typeText("U", "cat")).rejects.toThrow(/layout is com\.apple\.keylayout\.RussianWin/);
+    const d = new IosDriver(runner, undefined, async () => "com.apple.keylayout.Greek");
+    await expect(d.typeText("U", "cat")).rejects.toThrow(/layout is com\.apple\.keylayout\.Greek/);
     await expect(d.typeText("U", "cat")).rejects.toThrow(/key positions/);
     expect(calls.filter((c) => c.cmd === "axe")).toEqual([]);
   });
@@ -304,8 +304,8 @@ describe("typeText guards the OS keyboard path", () => {
     let id = "com.apple.keylayout.US";
     const d = new IosDriver(runner, undefined, async () => id);
     await d.typeText("U", "cat");
-    id = "com.apple.keylayout.RussianWin";
-    await expect(d.typeText("U", "cat")).rejects.toThrow(/RussianWin/);
+    id = "com.apple.keylayout.Greek";
+    await expect(d.typeText("U", "cat")).rejects.toThrow(/Greek/);
   });
 });
 

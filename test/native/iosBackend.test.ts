@@ -71,8 +71,8 @@ describe("IosRunnerBackend", () => {
 
   it("inputText: POST /inputText {text}, timeout 5s + 100ms/char + 500ms first-char pause", async () => {
     const { http, calls } = fakeHttp();
-    await new IosRunnerBackend(1, http).inputText("Привет");
-    expect(calls[0]).toMatchObject({ method: "POST", path: "/inputText", body: { text: "Привет" }, timeoutMs: 5000 + 600 + 500 });
+    await new IosRunnerBackend(1, http).inputText("こんにちは");
+    expect(calls[0]).toMatchObject({ method: "POST", path: "/inputText", body: { text: "こんにちは" }, timeoutMs: 5000 + 500 + 500 });
   });
 
   it("inputText counts characters, not UTF-16 units", async () => {

@@ -147,16 +147,16 @@ describe("AndroidDriver with the on-device server", () => {
     });
   }
 
-  it("types Cyrillic through the server (IME) and reports os/runner", async () => {
+  it("types non-ASCII text through the server (IME) and reports os/runner", async () => {
     const b = fakeBackend();
     const t = driver(b.backend);
-    expect(await t.d.typeText(S, "Привет")).toEqual({ path: "runner" });
-    expect(b.calls).toEqual(["inputText Привет"]);
+    expect(await t.d.typeText(S, "こんにちは")).toEqual({ path: "runner" });
+    expect(b.calls).toEqual(["inputText こんにちは"]);
   });
 
-  it("refuses Cyrillic on the adb path and says why the server was not used", async () => {
+  it("refuses non-ASCII text on the adb path and says why the server was not used", async () => {
     const t = driver(undefined, { state: "failed", reason: "Android server not built — …" });
-    const e = await t.d.typeText(S, "Привет").catch((x) => x);
+    const e = await t.d.typeText(S, "こんにちは").catch((x) => x);
     expect(e.message).toMatch(/non-ASCII/);
     expect(e.message).toContain("runner failed: Android server not built");
     expect(t.shell.cmds).toEqual([]);

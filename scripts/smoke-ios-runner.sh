@@ -5,9 +5,9 @@
 #
 # Installs build/drivers/ios/RNERunnerUITests-Runner.app on the booted simulator <udid>,
 # launches it with `simctl launch` (SIMCTL_CHILD_PORT), waits for GET /status, calls every
-# route with curl and prints status code + time per call, types Cyrillic "Привет" into the
+# route with curl and prints status code + time per call, types non-ASCII "こんにちは" into the
 # Spotlight search field and checks the value through /viewHierarchy, then terminates the
-# runner. Exit code 0 = all checks passed; 1 = a check failed; 2 = Cyrillic typing failed
+# runner. Exit code 0 = all checks passed; 1 = a check failed; 2 = Unicode typing failed
 # but everything else passed (see the plan's decision rule).
 #
 # Artifacts (responses, screenshots, runner console log) go to .cache/drivers/smoke/.
@@ -22,10 +22,10 @@ APP="$ROOT/build/drivers/ios/RNERunnerUITests-Runner.app"
 BUNDLE="dev.rneye.runnerUITests.xctrunner"
 OUT="$ROOT/.cache/drivers/smoke"
 BASE="http://127.0.0.1:$PORT"
-TEXT="Привет"
+TEXT="こんにちは"
 
 FAILS=0
-CYRILLIC_OK=1
+UNICODE_OK=1
 pass() { printf '  PASS  %s\n' "$*"; }
 fail() { printf '  FAIL  %s\n' "$*"; FAILS=$((FAILS + 1)); }
 now_ms() { node -e 'console.log(Date.now())'; }
@@ -118,7 +118,7 @@ call POST /touch "{\"x\":$((W / 2)),\"y\":8}"
 call POST /touch "{\"x\":$((W / 2)),\"y\":8,\"durationMs\":600}"
 [[ "$CODE" == 200 ]] && pass "touch durationMs 600 (long press)" || fail "/touch long HTTP $CODE: $(cat "$BODY")"
 
-echo "== Cyrillic typing (Spotlight search field)"
+echo "== Unicode typing (Spotlight search field)"
 # A downward swipe in the middle of the home screen opens Spotlight with its search
 # field focused and the keyboard up.
 call POST /swipe "{\"startX\":$((W / 2)),\"startY\":$((H * 35 / 100)),\"endX\":$((W / 2)),\"endY\":$((H * 65 / 100)),\"durationMs\":300}"
@@ -129,9 +129,9 @@ call POST /inputText "{\"text\":\"$TEXT\"}"
 [[ "$CODE" == 200 ]] && pass "inputText" || fail "/inputText HTTP $CODE: $(cat "$BODY")"
 sleep 0.5
 call POST /viewHierarchy '{}'
-cp "$BODY" "$OUT/cyrillic-hierarchy.json"
+cp "$BODY" "$OUT/unicode-hierarchy.json"
 call GET /screenshot
-cp "$BODY" "$OUT/cyrillic.png"
+cp "$BODY" "$OUT/unicode.png"
 FOUND="$(node -e '
   const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
   const want = process.argv[2]; const hits = []; const fields = [];
@@ -142,12 +142,12 @@ FOUND="$(node -e '
     (e.children || []).forEach(walk);
   })(d.axElement);
   console.log(hits.length ? "hit type " + hits[0] : "miss; text fields: " + fields.join(", "));
-' "$OUT/cyrillic-hierarchy.json" "$TEXT")"
+' "$OUT/unicode-hierarchy.json" "$TEXT")"
 if [[ "$FOUND" == hit* ]]; then
   pass "value == \"$TEXT\" ($FOUND)"
 else
-  CYRILLIC_OK=0
-  echo "  FAIL  Cyrillic: no element with value \"$TEXT\" — $FOUND (see $OUT/cyrillic.png)"
+  UNICODE_OK=0
+  echo "  FAIL  Unicode: no element with value \"$TEXT\" — $FOUND (see $OUT/unicode.png)"
 fi
 
 call POST /eraseText '{"charactersToErase":6}'
@@ -173,5 +173,5 @@ curl -s --max-time 1 "$BASE/status" >/dev/null && fail "runner still answers aft
 
 echo
 if [[ $FAILS -gt 0 ]]; then echo "RESULT: $FAILS check(s) failed"; exit 1; fi
-if [[ $CYRILLIC_OK -eq 0 ]]; then echo "RESULT: all routes OK, Cyrillic typing FAILED"; exit 2; fi
+if [[ $UNICODE_OK -eq 0 ]]; then echo "RESULT: all routes OK, Unicode typing FAILED"; exit 2; fi
 echo "RESULT: all checks passed"

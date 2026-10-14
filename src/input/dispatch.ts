@@ -127,7 +127,7 @@ export async function dispatchTap(args: {
  * Path selection mirrors dispatchTap. Verification does not: it runs on the OS
  * path as well, because the OS path is the one that corrupts. Measured on a live
  * app: "cat" through onChangeText read back exactly "cat" in ~1ms and drove the
- * real search pipeline; the same "cat" through `axe type` arrived as "сф",
+ * real search pipeline; the same "cat" through `axe type` arrived as other characters,
  * because axe sends positional HID keycodes that a non-ASCII host keyboard
  * layout rewrites — and it reported success.
  */

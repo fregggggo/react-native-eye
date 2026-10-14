@@ -245,7 +245,7 @@ describe("AndroidDriver shell safety", () => {
   it("refuses non-ASCII text instead of reporting a success that types nothing", async () => {
     const { runner } = fakeRunner({});
     const driver = new AndroidDriver(runner as any);
-    await expect(driver.typeText("SER", "привет")).rejects.toThrow(/non-ASCII/i);
+    await expect(driver.typeText("SER", "こんにちは")).rejects.toThrow(/non-ASCII/i);
     await expect(driver.typeText("SER", "🎉")).rejects.toThrow(/non-ASCII/i);
   });
 
