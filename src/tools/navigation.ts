@@ -78,14 +78,17 @@ export function registerNavigationTools(server: McpServer): void {
     {
       title: "Navigate",
       description:
-        "Read or drive react-navigation (and Expo Router) from outside the app. `stack` reports the current navigation state — one line per nesting level with the focused route marked. `navigate`/`push` go to a route by name (push always adds a new card, navigate reuses an existing one), `back`/`pop`/`pop_to_top` unwind it, `reset` replaces the whole state via resetRoot. Every mutating action reports the resulting stack. The navigation container ref is found by walking the React tree, so no app-side setup is needed; it is cached on globalThis.__RNE_NAV__ until the next reload. An unknown route name comes back as react-navigation's own \"was not handled by any navigator\" message.",
+        "Read or drive react-navigation (and Expo Router) from outside the app. `stack` reports the current navigation state — one line per nesting level with the focused route marked. `navigate`/`push` go to a route by name (push always adds a new card, navigate reuses an existing one), `back`/`pop`/`pop_to_top` unwind it, `reset` replaces the whole state via resetRoot. Every mutating action reports the resulting stack. The navigation container ref is found by walking the React tree, so no app-side setup is needed; it is cached on globalThis.__RNE_NAV__ and found again when that container unmounts. An unknown route name comes back as react-navigation's own \"was not handled by any navigator\" message.",
       inputSchema: {
-        action: z.enum(["stack", "navigate", "push", "back", "pop", "pop_to_top", "reset"]),
-        name: z.string().optional(),
-        params: z.record(z.unknown()).optional(),
-        count: z.number().int().positive().max(50).optional(),
-        state: z.record(z.unknown()).optional(),
+        action: z
+          .enum(["stack", "navigate", "push", "back", "pop", "pop_to_top", "reset"])
+          .describe("'stack' reads the current state; the others change it."),
+        name: z.string().optional().describe("Route name, for navigate and push."),
+        params: z.record(z.unknown()).optional().describe("Route params, for navigate and push."),
+        count: z.number().int().positive().max(50).optional().describe("How many screens to pop (default 1)."),
+        state: z.record(z.unknown()).optional().describe("The full navigation state to install, for reset (passed to resetRoot)."),
       },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     },
     async ({ action, name, params, count, state }) => {
       try {

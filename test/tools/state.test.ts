@@ -3,6 +3,7 @@ import { registerStateTools } from "../../src/tools/state.js";
 import { getRegistry } from "../../src/core/registry.js";
 import { makeServer, callTool } from "../helpers/callTool.js";
 import { startFakeMetro, type FakeMetro } from "../helpers/fakeCdp.js";
+import { makeRuntime } from "../helpers/rnRuntime.js";
 
 let metro: FakeMetro;
 beforeEach(() => getRegistry().reset());
@@ -60,6 +61,47 @@ describe("get_state / get_component_tree", () => {
     // the response text itself must say so, plainly, and say what to do.
     expect(res.content[0].text).toMatch(/truncat/i);
     expect(res.content[0].text).toMatch(/max_depth/i);
+  });
+
+  it("get_component_tree passes root to the app and names where to continue when cut off", async () => {
+    metro = await startFakeMetro({ port: 0 });
+    metro.setHandler("Runtime.enable", () => ({}));
+    metro.setHandler("Log.enable", () => ({}));
+    const sent: string[] = [];
+    metro.setHandler("Runtime.evaluate", (p) => {
+      const expr = String(p.expression);
+      if (expr.includes("__REACT_DEVTOOLS_GLOBAL_HOOK__") && expr.includes("cutOff")) {
+        sent.push(expr);
+        return {
+          result: {
+            value: JSON.stringify({ available: true, truncated: true, root: "Feed", matches: 1, cutOff: ["FeedRow"], roots: [{ name: "Feed" }] }),
+          },
+        };
+      }
+      return { result: { value: undefined } };
+    });
+    await getRegistry().connect({ port: metro.port });
+    const server = makeServer();
+    registerStateTools(server);
+    const res = await callTool(server, "get_component_tree", { root: "Feed", max_depth: 2 });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain('var ROOT = \\"Feed\\"');
+    expect(res.content[0].text).toMatch(/Pass root with one of the components the walk stopped at \('FeedRow'\)/);
+  });
+
+  it("get_state says a found store is not initialised instead of 'no store'", async () => {
+    metro = await startFakeMetro({ port: 0 });
+    metro.setHandler("Runtime.enable", () => ({}));
+    metro.setHandler("Log.enable", () => ({}));
+    // The real snippet, run against a store that has no state yet.
+    const rt = makeRuntime({ __RNE_STORES__: { getState: () => undefined } });
+    metro.setHandler("Runtime.evaluate", (p) => ({ result: { value: rt.evaluate(String(p.expression)) } }));
+    await getRegistry().connect({ port: metro.port });
+    const server = makeServer();
+    registerStateTools(server);
+    const res = await callTool(server, "get_state", {});
+    expect(res.content[0].text).toContain('"found":true');
+    expect(res.content[0].text).toMatch(/not initialised yet/);
   });
 
   it("component tree reports when hook is unavailable", async () => {

@@ -129,8 +129,10 @@ describe("state snippets", () => {
       store: { getState: () => ({ secret: "should not leak" }) },
     });
     // The developer-designated store was found, it just isn't initialised yet
-    // — that is the honest, if under-informative, outcome, not a stray global's data.
-    expect(out.found).toBe(false);
+    // — say exactly that, not "no store" (which sent the caller off to assign
+    // one) and never a stray global's data.
+    expect(out).toMatchObject({ found: true, source: "__RNE_STORES__", resolved: true });
+    expect(out.note).toMatch(/getState\(\) returned undefined/);
     expect(JSON.stringify(out)).not.toContain("should not leak");
   });
 
@@ -140,7 +142,7 @@ describe("state snippets", () => {
       store: { getState: () => undefined },
       __store__: { getState: () => ({ secret: "should not leak" }) },
     });
-    expect(out.found).toBe(false);
+    expect(out).toMatchObject({ found: true, source: "__RNE_STORES__" });
     expect(JSON.stringify(out)).not.toContain("should not leak");
   });
 
@@ -419,6 +421,57 @@ describe("state snippets", () => {
   // exactly the tree large enough to set truncated:true, the flag proving it
   // was cut is also the thing most likely to be cut off itself, leaving the
   // caller with invalid JSON and no visible signal anything was wrong.
+  // A screen sits ~10 authored components deep in a real app, below where any
+  // max_depth from the top fits the node and wire caps — so the walk can start
+  // at a named component instead, with the depth budget counted from there.
+  function deepApp() {
+    const leaf = named("Price", null, { testID: "price", children: "9.99" });
+    const card = named("Card", leaf, { testID: "card" });
+    const screen = named("CheckoutScreen", wrapper("Memo(View)", 14, host("RCTView", card)));
+    let top: any = screen;
+    for (let i = 9; i >= 0; i--) top = named("Layer" + i, top);
+    return top;
+  }
+
+  it("componentTreeExpression starts the walk at the component named by root", () => {
+    const out = run(componentTreeExpression(3, "CheckoutScreen"), hookWithRoot(deepApp()));
+    expect(out).toMatchObject({ available: true, truncated: false, root: "CheckoutScreen", matches: 1 });
+    expect(out.roots).toHaveLength(1);
+    expect(out.roots[0].name).toBe("CheckoutScreen");
+    expect(findByName(out.roots, "Price")).toMatchObject({ testID: "price", text: "9.99" });
+    expect(findByName(out.roots, "Layer9")).toBeUndefined();
+  });
+
+  it("componentTreeExpression counts max_depth from the root component", () => {
+    // As from the top: the component the budget runs out at is shown, its children are not.
+    const out = run(componentTreeExpression(1, "CheckoutScreen"), hookWithRoot(deepApp()));
+    expect(findByName(out.roots, "Card")).toBeDefined();
+    expect(findByName(out.roots, "Price")).toBeUndefined();
+    expect(out.truncated).toBe(true);
+    expect(out.cutOff).toEqual(["Card"]);
+  });
+
+  it("componentTreeExpression renders each mounted instance of the root component", () => {
+    const a = named("Row", null, { testID: "r1" });
+    const b = named("Row", null, { testID: "r2" });
+    a.sibling = b;
+    const out = run(componentTreeExpression(3, "Row"), hookWithRoot(named("List", a)));
+    expect(out.matches).toBe(2);
+    expect(out.roots.map((r: any) => r.testID)).toEqual(["r1", "r2"]);
+  });
+
+  it("componentTreeExpression names similar components when root matches nothing", () => {
+    const out = run(componentTreeExpression(3, "checkout"), hookWithRoot(deepApp()));
+    expect(out.found).toBe(false);
+    expect(out.hint).toContain("CheckoutScreen");
+  });
+
+  it("componentTreeExpression lists where the depth budget cut the tree off", () => {
+    const out = run(componentTreeExpression(3), hookWithRoot(deepApp()));
+    expect(out.truncated).toBe(true);
+    expect(out.cutOff).toEqual(["Layer3"]);
+  });
+
   it("componentTreeExpression puts available/truncated ahead of roots so a wire-size slice cannot remove them", () => {
     let head: any = null;
     let prev: any = null;

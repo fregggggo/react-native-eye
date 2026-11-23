@@ -84,7 +84,10 @@ export function getStateExpression(path?: string, maxDepth = 3): string {
       // state is undefined right now.
       if (got.found) { state = got.value; source = candidateNames[i]; break; }
     }
-    if (state === undefined) return JSON.stringify({ found: false, hint: "No store found. Assign your store (a single store, or a map of named stores) to globalThis.__RNE_STORES__ for reliable access." });
+    if (source === undefined) return JSON.stringify({ found: false, hint: "No store found. Assign your store (a single store, or a map of named stores) to globalThis.__RNE_STORES__ for reliable access." });
+    // Found, but nothing in it yet. Reporting this as found:false sent the
+    // caller off to assign a store that was already assigned.
+    if (state === undefined) return JSON.stringify({ found: true, source: source, resolved: true, path: ${pathLiteral} || "(root)", note: "The store at globalThis." + source + " was found, but its getState() returned undefined — it is not initialised yet." });
     var p = ${pathLiteral};
     // "found" only ever meant "a store exists". Whether the given dot-path
     // actually resolved is tracked separately so a typo'd segment (nothing
@@ -174,7 +177,13 @@ export function currentRouteExpression(): string {
   })()`;
 }
 
-export function componentTreeExpression(maxDepth: number): string {
+/**
+ * `root`, when given, is a component display name: the walk starts at each
+ * fiber with that name (up to MAX_MATCHES) instead of the app root, and
+ * max_depth counts from there — the way to see a screen that sits deeper than
+ * any max_depth from the top can reach within the node and wire caps.
+ */
+export function componentTreeExpression(maxDepth: number, root?: string): string {
   return `(function () {
     var hook = globalThis.__REACT_DEVTOOLS_GLOBAL_HOOK__;
     if (!hook || !hook.renderers) return JSON.stringify({ available: false, hint: "React DevTools hook not present." });
@@ -224,46 +233,95 @@ export function componentTreeExpression(maxDepth: number): string {
       }
       return "";
     }
-    // Unnamed fibers (fragments, context providers, memo wrappers) used to drop
-    // their whole subtree; their children are lifted into the parent instead.
+    // The authored components the depth budget stopped at, so a truncated
+    // answer can say where to pass "root" next. Distinct, and few.
+    var cutOff = [];
+    function noteCut(name) {
+      if (name && cutOff.length < 10 && cutOff.indexOf(name) < 0) cutOff.push(name);
+    }
+    // One fiber: its node, or — for an unnamed fiber (fragment, context
+    // provider, memo wrapper) — its children lifted into the parent, which
+    // used to drop the whole subtree.
+    function one(fiber, depth, out) {
+      var name = nameOf(fiber);
+      if (name && DROP_SUBTREES[name]) return;
+      var spend = name && NAMED_TAGS[fiber.tag] ? 1 : 0;
+      if (name) {
+        if (nodeCount >= MAX_NODES) { truncated = true; stopped = true; return; }
+        nodeCount++;
+      }
+      var p = fiber.memoizedProps || {};
+      var overBudget = spend && depth + 1 > ${maxDepth};
+      if (overBudget && fiber.child) { truncated = true; noteCut(name); }
+      var kids = overBudget ? [] : collect(fiber.child, depth + spend);
+      if (name) {
+        var node = { name: name };
+        if (p.testID) node.testID = p.testID;
+        var txt = textOf(p.children, 0).trim();
+        if (txt) node.text = txt.length > 60 ? txt.slice(0, 60) + "…" : txt;
+        if (kids.length) node.children = kids;
+        out.push(node);
+      } else {
+        for (var i = 0; i < kids.length; i++) out.push(kids[i]);
+      }
+    }
     function collect(fiber, depth) {
       var out = [];
       while (fiber) {
         if (stopped) return out;
-        var name = nameOf(fiber);
-        if (name && DROP_SUBTREES[name]) { fiber = fiber.sibling; continue; }
-        var spend = name && NAMED_TAGS[fiber.tag] ? 1 : 0;
-        if (name) {
-          if (nodeCount >= MAX_NODES) { truncated = true; stopped = true; return out; }
-          nodeCount++;
-        }
-        var p = fiber.memoizedProps || {};
-        var overBudget = spend && depth + 1 > ${maxDepth};
-        if (overBudget && fiber.child) truncated = true;
-        var kids = overBudget ? [] : collect(fiber.child, depth + spend);
-        if (name) {
-          var node = { name: name };
-          if (p.testID) node.testID = p.testID;
-          var txt = textOf(p.children, 0).trim();
-          if (txt) node.text = txt.length > 60 ? txt.slice(0, 60) + "…" : txt;
-          if (kids.length) node.children = kids;
-          out.push(node);
-        } else {
-          for (var i = 0; i < kids.length; i++) out.push(kids[i]);
-        }
+        one(fiber, depth, out);
         fiber = fiber.sibling;
       }
       return out;
+    }
+    var ROOT = ${JSON.stringify(root ?? "")};
+    var MAX_MATCHES = 5;
+    var matches = [];
+    var moreMatches = false;
+    var similar = [];
+    // Pre-order and iterative, like the nav walk: sibling pushed before child
+    // so the child pops first. A match's own subtree is not searched again —
+    // it is rendered from the match.
+    function findRoots(start) {
+      var lower = ROOT.toLowerCase();
+      var stack = [start];
+      var n = 0;
+      while (stack.length) {
+        if (++n > 50000) return;
+        var f = stack.pop();
+        if (!f) continue;
+        var nm = nameOf(f);
+        if (nm && DROP_SUBTREES[nm]) { if (f.sibling) stack.push(f.sibling); continue; }
+        if (nm === ROOT) {
+          if (matches.length >= MAX_MATCHES) { moreMatches = true; return; }
+          matches.push(f);
+          if (f.sibling) stack.push(f.sibling);
+          continue;
+        }
+        if (nm && similar.length < 8 && similar.indexOf(nm) < 0 && nm.toLowerCase().indexOf(lower) >= 0) similar.push(nm);
+        if (f.sibling) stack.push(f.sibling);
+        if (f.child) stack.push(f.child);
+      }
     }
     var roots = [];
     try {
       hook.renderers.forEach(function (_, id) {
         var fiberRoots = hook.getFiberRoots ? hook.getFiberRoots(id) : [];
         fiberRoots.forEach(function (r) {
+          if (ROOT) { findRoots(r.current); return; }
           var tree = collect(r.current, 0);
           for (var i = 0; i < tree.length; i++) roots.push(tree[i]);
         });
       });
+      if (ROOT) {
+        if (!matches.length) {
+          return JSON.stringify({
+            available: true, found: false, root: ROOT,
+            hint: "No mounted component is named '" + ROOT + "'." + (similar.length ? " Similar names: " + similar.join(", ") + "." : " Names are display names, as get_component_tree shows them.")
+          });
+        }
+        for (var m = 0; m < matches.length && !stopped; m++) one(matches[m], 0, roots);
+      }
     } catch (e) { return JSON.stringify({ available: false, error: String(e) }); }
     // 'available' and 'truncated' go first, 'roots' (unbounded — up to
     // MAX_NODES) last: the tool that reads this slices the JSON string at a
@@ -271,6 +329,10 @@ export function componentTreeExpression(maxDepth: number): string {
     // well over that cap. Emitting the flags after 'roots' put the one field
     // that says "there is more than this" exactly where truncation was most
     // likely to remove it (field test 2 review, finding 3).
-    return JSON.stringify({ available: true, truncated: truncated, roots: roots });
+    var res = { available: true, truncated: truncated };
+    if (ROOT) { res.root = ROOT; res.matches = matches.length; if (moreMatches) res.moreMatches = true; }
+    if (cutOff.length) res.cutOff = cutOff;
+    res.roots = roots;
+    return JSON.stringify(res);
   })()`;
 }

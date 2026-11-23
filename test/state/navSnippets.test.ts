@@ -84,6 +84,44 @@ describe("nav discovery snippet", () => {
     expect(walked).not.toHaveBeenCalled();
   });
 
+  // An auth flow swapping navigators remounts the container without a reload:
+  // the cached ref of the old one is still ref-shaped but never ready again,
+  // and every read and navigate went to it.
+  it("re-discovers when the cached container unmounted, and replaces its own cache", () => {
+    const old = makeRef({ isReady: () => false, getRootState: () => undefined });
+    const live = makeRef({ isReady: () => true });
+    const g: any = {
+      JSON,
+      __RNE_NAV__: old,
+      __RNE_NAV_FOUND__: old,
+      __REACT_DEVTOOLS_GLOBAL_HOOK__: hookFor({ child: provider(live) }),
+    };
+    const out = JSON.parse(new Function("globalThis", `return (${navStateExpression()});`)(g));
+    expect(out.found).toBe(true);
+    expect(out.source).toBe("fiber");
+    expect(out.state.routes.map((r: any) => r.name)).toEqual(["Feed", "Post"]);
+    expect(g.__RNE_NAV__).toBe(live);
+  });
+
+  it("leaves a ref the app assigned itself in place, even while it is not ready", () => {
+    const appRef = makeRef({ isReady: () => false });
+    const live = makeRef({ isReady: () => true });
+    const g: any = { JSON, __RNE_NAV__: appRef, __REACT_DEVTOOLS_GLOBAL_HOOK__: hookFor({ child: provider(live) }) };
+    const out = JSON.parse(new Function("globalThis", `return (${navStateExpression()});`)(g));
+    expect(out.source).toBe("fiber");
+    expect(g.__RNE_NAV__).toBe(appRef);
+  });
+
+  it("falls back to a not-ready cached ref when nothing else is mounted", () => {
+    const old = makeRef({ isReady: () => false });
+    const out = run(navStateExpression(), {
+      __RNE_NAV__: old,
+      __REACT_DEVTOOLS_GLOBAL_HOOK__: hookFor({ child: provider({ some: "context" }) }),
+    });
+    expect(out.found).toBe(true);
+    expect(out.source).toBe("__RNE_NAV__");
+  });
+
   // Never throw into app code: a missing hook or a missing container is a
   // structured answer the caller can act on, not an exception.
   it("reports found:false with a reason when the DevTools hook is absent", () => {

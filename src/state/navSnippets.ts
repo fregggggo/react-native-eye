@@ -57,20 +57,40 @@ export const NAV_FIND_FN = `
     return undefined;
   }
 
+  // Only a ref this discovery cached is ever replaced: one the app assigned to
+  // __RNE_NAV__ itself stays the app's.
+  function __rneNavCache(ref) {
+    var cur = globalThis.__RNE_NAV__;
+    if (cur === undefined || cur === null || cur === globalThis.__RNE_NAV_FOUND__) {
+      globalThis.__RNE_NAV__ = ref;
+      globalThis.__RNE_NAV_FOUND__ = ref;
+    }
+  }
+
   function __rneNavFind() {
-    // A reload clears the global, so a stale ref cannot outlive its tree.
+    // A reload clears the global, but a container that unmounts without one —
+    // an auth flow swapping navigators, a remount — leaves its ref behind:
+    // still ref-shaped, never ready again, and every read and action went to
+    // it. Only a ready ref skips the walk; a stale one is the fallback when
+    // the walk finds nothing better.
     var cached = globalThis.__RNE_NAV__;
-    if (__rneNavIsRef(cached)) return { ref: cached, source: "__RNE_NAV__" };
+    var stale;
+    if (__rneNavIsRef(cached)) {
+      var ready = typeof cached.isReady !== "function" || __rneNavSafe(function () { return cached.isReady(); }) === true;
+      if (ready) return { ref: cached, source: "__RNE_NAV__" };
+      stale = cached;
+    }
     var names = ["navigationRef", "__navigationRef__"];
     var explicit = [globalThis.navigationRef, globalThis.__navigationRef__];
     for (var i = 0; i < explicit.length; i++) {
-      if (__rneNavIsRef(explicit[i])) {
-        globalThis.__RNE_NAV__ = explicit[i];
+      if (__rneNavIsRef(explicit[i]) && explicit[i] !== stale) {
+        __rneNavCache(explicit[i]);
         return { ref: explicit[i], source: names[i] };
       }
     }
     var hook = globalThis.__REACT_DEVTOOLS_GLOBAL_HOOK__;
     if (!hook || !hook.renderers || !hook.getFiberRoots) {
+      if (stale) return { ref: stale, source: "__RNE_NAV__" };
       return { reason: "React DevTools hook not present — navigation discovery needs a dev build connected through Metro. Assign your navigation container ref to globalThis.__RNE_NAV__ to work without it." };
     }
     var roots = [];
@@ -80,15 +100,17 @@ export const NAV_FIND_FN = `
         if (fr) fr.forEach(function (r) { if (r && r.current) roots.push(r.current); });
       });
     } catch (e) {
+      if (stale) return { ref: stale, source: "__RNE_NAV__" };
       return { reason: "could not read React fiber roots: " + String(e) };
     }
     for (var j = 0; j < roots.length; j++) {
       var found = __rneNavWalk(roots[j]);
       if (found) {
-        globalThis.__RNE_NAV__ = found;
+        __rneNavCache(found);
         return { ref: found, source: "fiber" };
       }
     }
+    if (stale) return { ref: stale, source: "__RNE_NAV__" };
     return { reason: "no react-navigation container found in the React tree — is a NavigationContainer (or Expo Router) mounted?" };
   }
 
