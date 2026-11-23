@@ -78,11 +78,21 @@ export function registerOcrTools(
       description:
         "Read the visible text off the screen with on-host OCR (Apple Vision). Works without a Metro connection and sees text the layout tree cannot: images, canvases, WebViews, native dialogs. Returns one line per recognized text run as `<text> @x,y` — x,y is the centre in tap units and can be passed straight to tap {x,y}. Lines that also exist in the app's JS layout are marked [tree]: prefer tap {text} for those, since an OCR box is just text, not a control. Optional: search (substring filters, case-insensitive), languages (e.g. [\"de\",\"en\"]; auto-detected by default), compare_tree (default true). macOS host only; the first call compiles a small Vision helper (~10–30s, cached).",
       inputSchema: {
-        search: z.array(z.string()).optional(),
-        languages: z.array(z.string()).optional(),
-        compare_tree: z.boolean().optional(),
-        device: z.string().optional(),
+        search: z
+          .array(z.string())
+          .optional()
+          .describe("Keep only lines containing any of these substrings (case-insensitive)."),
+        languages: z
+          .array(z.string())
+          .optional()
+          .describe('Recognition languages in priority order, e.g. ["de","en"]; auto-detected by default.'),
+        compare_tree: z
+          .boolean()
+          .optional()
+          .describe("Mark lines that also exist in the app's JS layout with [tree] (default true; needs Metro)."),
+        device: z.string().optional().describe("Device udid/serial or name substring; default: the connected or only booted device."),
       },
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async ({ search, languages, compare_tree, device }) => {
       try {
@@ -99,8 +109,11 @@ export function registerOcrTools(
           } else {
             // JS path only: the OS tree (axe) can take seconds and this is a hint, not a result.
             try {
-              const { els } = await captureLayoutWithSource(driver, udid, { conn, source: "js" });
-              inTree = markInTree(ordered, els);
+              const { els, appState } = await captureLayoutWithSource(driver, udid, { conn, source: "js" });
+              // The screen shows some other app; its text matching the JS tree
+              // of this one would be a coincidence, not a control.
+              if (appState) notes.push(`tree comparison skipped: the app is not in the foreground (AppState: ${appState})`);
+              else inTree = markInTree(ordered, els);
             } catch (err) {
               notes.push(`tree comparison skipped: ${err instanceof Error ? err.message : String(err)}`);
             }

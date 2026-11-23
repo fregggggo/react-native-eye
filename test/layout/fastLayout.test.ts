@@ -212,6 +212,189 @@ describe("fastLayoutExpression deduplication", () => {
   });
 });
 
+describe("fastLayoutExpression deduplication picks the right survivor", () => {
+  it("keeps the real text host over a wrapper that borrowed its label a few px away", async () => {
+    // Live: a trend card's "956.0K" was missing from the listing. The wrapper
+    // (walked first) was remembered, the RCTText 11px away dropped as its
+    // duplicate, and the surviving wrapper flagged a container and suppressed.
+    const tree = fabricFiber({
+      ...SCREEN,
+      children: [
+        {
+          type: "RCTView",
+          props: { children: { props: { children: "956.0K" } } },
+          rect: { x: 40, y: 637, w: 48, h: 20 }, // centre @64,647
+          children: [{ type: "RCTText", props: { children: "956.0K" }, rect: { x: 56, y: 638, w: 38, h: 20 } }], // @75,648
+        },
+      ],
+    });
+    const out = await capture(tree, true);
+    const hits = out.els.filter((e: any) => e.text === "956.0K");
+    expect(hits).toHaveLength(1);
+    expect(hits[0]).toMatchObject({ type: "RCTText" });
+    expect(hits[0].container).toBeUndefined();
+  });
+
+  it("keeps the visible copy when the same screen is mounted twice (the hidden one is walked first)", async () => {
+    const post = (): NodeSpec => ({
+      type: "RCTView",
+      rect: { x: 0, y: 0, w: 400, h: 800 },
+      children: [
+        {
+          type: "RCTView",
+          props: { testID: "like-button", onPress: () => {} },
+          rect: { x: 20, y: 700, w: 80, h: 40 },
+          children: [{ type: "RCTText", props: { children: "Like" }, rect: { x: 40, y: 710, w: 40, h: 20 } }],
+        },
+      ],
+    });
+    const scene = (focused: boolean): NodeSpec => ({
+      type: "RCTView",
+      props: { focused, descriptor: {} },
+      rect: { x: 0, y: 0, w: 400, h: 800 },
+      children: [post()],
+    });
+    const out = await capture(fabricFiber({ ...SCREEN, children: [scene(false), scene(true)] }), true);
+    const like = out.els.filter((e: any) => e.testID === "like-button");
+    expect(like).toHaveLength(1);
+    expect(like[0].hidden).toBeUndefined();
+    expect(out.els.filter((e: any) => e.text === "Like" && !e.hidden)).toHaveLength(1);
+  });
+});
+
+describe("clipping by scroll views and overflow:hidden", () => {
+  it("marks rows scrolled past a list's edge off-screen even though they are inside the window", async () => {
+    // A list between a header (0-100) and a tab bar (700-800): rows 12+ still
+    // measure inside the window, under the tab bar.
+    const rows: NodeSpec[] = [];
+    for (let i = 0; i < 14; i++) {
+      rows.push({ type: "RCTText", props: { children: `Row ${i}` }, rect: { x: 16, y: 115 + i * 50, w: 200, h: 20 } });
+    }
+    const tree = fabricFiber({
+      ...SCREEN,
+      children: [
+        {
+          type: "RCTScrollView",
+          rect: { x: 0, y: 100, w: 400, h: 600 },
+          children: [{ type: "RCTScrollContentView", rect: { x: 0, y: 100, w: 400, h: 1000 }, children: rows }],
+        },
+        { type: "RCTText", props: { children: "Tab bar" }, rect: { x: 150, y: 740, w: 100, h: 20 } },
+      ],
+    });
+    const out = await capture(tree, true);
+    const by = Object.fromEntries(out.els.map((e: any) => [e.text, e]));
+    expect(by["Row 11"].offscreen).toBeUndefined();
+    expect(by["Row 12"].offscreen).toBe(true);
+    expect(by["Row 13"].offscreen).toBe(true);
+    expect(by["Tab bar"].offscreen).toBeUndefined();
+  });
+
+  it("cuts a row half past the list's edge to its visible part", async () => {
+    const tree = fabricFiber({
+      ...SCREEN,
+      children: [
+        {
+          type: "RCTScrollView",
+          rect: { x: 0, y: 100, w: 400, h: 600 },
+          children: [{ type: "RCTText", props: { children: "Half" }, rect: { x: 0, y: 680, w: 400, h: 40 } }],
+        },
+      ],
+    });
+    const out = await capture(tree, true);
+    expect(out.els[0].visible).toEqual({ x: 0, y: 680, w: 400, h: 20 });
+  });
+
+  it("hides what an overflow:hidden view cuts off, and nests clips", async () => {
+    const tree = fabricFiber({
+      ...SCREEN,
+      children: [
+        {
+          type: "RCTView",
+          props: { style: [{ overflow: "visible" }, { overflow: "hidden" }] },
+          rect: { x: 0, y: 200, w: 400, h: 0 }, // a collapsed accordion
+          children: [{ type: "RCTText", props: { children: "Collapsed" }, rect: { x: 0, y: 200, w: 400, h: 40 } }],
+        },
+        {
+          type: "RCTView",
+          props: { style: { overflow: "visible" } },
+          rect: { x: 0, y: 300, w: 400, h: 0 },
+          children: [{ type: "RCTText", props: { children: "Overflowing" }, rect: { x: 0, y: 300, w: 400, h: 40 } }],
+        },
+      ],
+    });
+    const out = await capture(tree, true);
+    const by = Object.fromEntries(out.els.map((e: any) => [e.text, e]));
+    expect(by["Collapsed"].offscreen).toBe(true);
+    expect(by["Overflowing"].offscreen).toBeUndefined();
+  });
+});
+
+describe("clipping stops at a Modal", () => {
+  it("does not cut a Modal's content to the scroll view the <Modal> was declared in", async () => {
+    const tree = fabricFiber({
+      ...SCREEN,
+      children: [
+        {
+          type: "RCTScrollView",
+          rect: { x: 0, y: 100, w: 400, h: 200 },
+          children: [
+            {
+              type: "RCTModalHostView",
+              rect: { x: 0, y: 0, w: 400, h: 800 },
+              children: [{ type: "RCTText", props: { children: "Confirm" }, rect: { x: 100, y: 600, w: 200, h: 40 } }],
+            },
+          ],
+        },
+      ],
+    });
+    const out = await capture(tree, true);
+    const confirm = out.els.find((e: any) => e.text === "Confirm");
+    expect(confirm.offscreen).toBeUndefined();
+    expect(confirm.visible).toBeUndefined();
+  });
+});
+
+describe("accessibility labels", () => {
+  it("names an icon-only button by its accessibilityLabel or aria-label, and says so", async () => {
+    const tree = fabricFiber({
+      ...SCREEN,
+      children: [
+        {
+          type: "RCTView",
+          props: { accessibilityLabel: "Close", onClick: () => {} },
+          rect: { x: 350, y: 50, w: 44, h: 44 },
+          children: [{ type: "RNSVGSvgView", rect: { x: 360, y: 60, w: 24, h: 24 } }],
+        },
+        { type: "RCTView", props: { "aria-label": "Create", onClick: () => {} }, rect: { x: 180, y: 880, w: 60, h: 56 } },
+        { type: "RCTText", props: { children: "Title", accessibilityLabel: "Screen title" }, rect: { x: 20, y: 60, w: 100, h: 24 } },
+      ],
+    });
+    const out = await capture(tree, true);
+    const by = Object.fromEntries(out.els.map((e: any) => [e.text, e]));
+    expect(by["Close"]).toMatchObject({ a11y: true, pressable: true });
+    expect(by["Create"]).toMatchObject({ a11y: true });
+    // A visible label still wins over the accessibility one.
+    expect(by["Title"].a11y).toBeUndefined();
+    expect(by["Screen title"]).toBeUndefined();
+  });
+
+  it("keeps an input's placeholder as its label", async () => {
+    const tree = fabricFiber({
+      ...SCREEN,
+      children: [
+        {
+          type: "RCTSinglelineTextInputView",
+          props: { placeholder: "Email", accessibilityLabel: "Email address" },
+          rect: { x: 0, y: 100, w: 300, h: 40 },
+        },
+      ],
+    });
+    const out = await capture(tree, true);
+    expect(out.els[0]).toMatchObject({ placeholder: "Email", input: true });
+    expect(out.els[0].text).toBeUndefined();
+  });
+});
+
 describe("visibility of mounted-but-hidden content", () => {
   const screenWith = (props: Record<string, unknown>, label: string): NodeSpec => ({
     type: "RCTView",
@@ -286,9 +469,11 @@ describe("visibility of mounted-but-hidden content", () => {
   });
 
   it("hides a stack scene below the top (focused:false)", async () => {
+    // native-stack's SceneView: focused plus the navigation context a scene
+    // carries (descriptor), and no press handler of its own.
     const scene = (focused: boolean, label: string): NodeSpec => ({
       type: "RCTView",
-      props: { focused },
+      props: { focused, index: 0, descriptor: { route: { key: label } } },
       rect: { x: 0, y: 0, w: 400, h: 800 },
       children: [{ type: "RCTText", props: { children: label }, rect: { x: 0, y: 100, w: 400, h: 40 } }],
     });
@@ -296,6 +481,26 @@ describe("visibility of mounted-but-hidden content", () => {
     const by = Object.fromEntries(out.els.map((e: any) => [e.text, e]));
     expect(by["Under"].hidden).toBe(true);
     expect(by["Top"].hidden).toBeUndefined();
+  });
+
+  it("does not hide an inactive tab button just because it says focused:false", async () => {
+    // @react-navigation/bottom-tabs renders <BottomTabItem focused={false}> for
+    // every inactive tab — with route and descriptor, but also with onPress.
+    const tab = (label: string, focused: boolean, x: number): NodeSpec => ({
+      type: "RCTView",
+      props: { focused, route: { key: label, name: label }, descriptor: {}, onPress: () => {} },
+      rect: { x, y: 760, w: 200, h: 40 },
+      children: [{ type: "RCTText", props: { children: label }, rect: { x: x + 70, y: 770, w: 60, h: 20 } }],
+    });
+    const out = await capture(fabricFiber({ ...SCREEN, children: [tab("Home", true, 0), tab("Settings", false, 200)] }), true);
+    const settings = out.els.find((e: any) => e.text === "Settings");
+    expect(settings).toBeDefined();
+    expect(settings.hidden).toBeUndefined();
+  });
+
+  it("does not hide an app component whose focused prop means input focus", async () => {
+    const out = await capture(fabricFiber({ ...SCREEN, children: [screenWith({ focused: false }, "Email field")] }), true);
+    expect(out.els.find((e: any) => e.text === "Email field").hidden).toBeUndefined();
   });
 
   it("leaves ordinary index props alone", async () => {

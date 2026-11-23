@@ -14,7 +14,7 @@
 //      rejected: one full-screen overlay on the live scene owns every hit, which
 //      marked the entire visible UI as covered.)
 
-import { MEASURER, SAFE, VISIBILITY } from "./runtimeSnippets.js";
+import { A11Y_LABEL, MEASURER, SAFE, STYLE_PROPS, TEXT_FROM, VISIBILITY } from "./runtimeSnippets.js";
 
 /**
  * Just the root view's frame — the app's own idea of the visible area, used to
@@ -64,17 +64,15 @@ export function fastLayoutExpression(maxNodes = 1200): string {
 
     ${VISIBILITY}
 
-    function textFrom(children, depth) {
-      if (depth > 3 || children == null) return "";
-      if (typeof children === "string" || typeof children === "number") return String(children);
-      if (Array.isArray(children)) {
-        var s = "";
-        for (var i = 0; i < children.length; i++) s += textFrom(children[i], depth + 1);
-        return s;
-      }
-      if (children.props) return textFrom(children.props.children, depth + 1);
-      return "";
-    }
+    ${TEXT_FROM}
+
+    ${A11Y_LABEL}
+
+    ${STYLE_PROPS}
+
+    // Hosts that clip their children (scroll views, overflow:hidden), measured
+    // alongside the elements so a frame can be cut to what its ancestors show.
+    var clips = [];
     function isPressable(p) {
       return !!(p && (p.onPress || p.onClick || p.accessibilityRole === "button" || p.accessibilityRole === "link"));
     }
@@ -172,7 +170,8 @@ export function fastLayoutExpression(maxNodes = 1200): string {
 
     // Siblings are iterated, only children recurse: a long list would otherwise
     // grow the stack by one frame per row.
-    function walk(fiber, hidden, insidePressable, insideOverlay, toast) {
+    // clip: index into clips of the nearest clipping ancestor, -1 for none.
+    function walk(fiber, hidden, insidePressable, insideOverlay, toast, clip) {
       while (fiber) {
         fibers++;
         // insideOverlay: false = none, true = overlay, "off" = empty LogBox
@@ -195,9 +194,16 @@ export function fastLayoutExpression(maxNodes = 1200): string {
         var p = fiber.memoizedProps || {};
         var press = safe(function () { return isPressable(p); }) === true;
         var m = measurer(fiber.stateNode);
+        var clipHere = clip;
         if (m) {
           measurables++;
           if (!rootMeasurer) { rootMeasurer = m; rootNode = fiber.stateNode && fiber.stateNode.node; }
+          // The root is the viewport itself; every other clipping host narrows
+          // what its descendants can show.
+          else if (safe(function () { return clipsChildren(fiber.type, p); }) === true) {
+            clips.push({ m: m, parent: clip });
+            clipHere = clips.length - 1;
+          }
           if (hosts.length >= MAX) {
             truncated = true;
           } else {
@@ -216,6 +222,14 @@ export function fastLayoutExpression(maxNodes = 1200): string {
             }
             var hostType = typeof fiber.type === "string" ? fiber.type : undefined;
             var isInput = safe(function () { return isTextInputHost(hostType, p); }) === true;
+            // An icon-only button is named by its accessibility label alone —
+            // exactly what the OS tree (axe's AXLabel) calls it. Inputs keep
+            // their placeholder, which is the label the listing shows for them.
+            var fromA11y = false;
+            if (!text && !isInput) {
+              var al = a11yLabel(p);
+              if (al) { text = al; fromA11y = true; }
+            }
             var labelled = !!(testID || press || text || isInput);
             // Inside an overlay an unlabelled node is kept anyway: the backdrop
             // carries no label and its frame is the whole evidence (D12).
@@ -228,6 +242,7 @@ export function fastLayoutExpression(maxNodes = 1200): string {
                 input: isInput || undefined,
                 placeholder: isInput ? (safe(function () { return p.placeholder; }) || undefined) : undefined,
                 value: isInput ? (safe(function () { return p.value; }) || undefined) : undefined,
+                a11y: fromA11y, clip: clip,
                 descStart: 0, descEnd: 0
               });
               idx = hosts.length - 1;
@@ -235,8 +250,11 @@ export function fastLayoutExpression(maxNodes = 1200): string {
             }
           }
         }
+        // A Modal's content is mounted in a window of its own, whatever scroll
+        // view or overflow:hidden view the <Modal> element was declared in.
+        if (typeof fiber.type === "string" && /ModalHostView$/.test(fiber.type)) clipHere = -1;
         var before = hosts.length;
-        walk(fiber.child, hiddenHere, insidePressable || press, overlayHere, toastHere);
+        walk(fiber.child, hiddenHere, insidePressable || press, overlayHere, toastHere, clipHere);
         if (idx >= 0) { hosts[idx].descStart = before; hosts[idx].descEnd = hosts.length; }
         fiber = fiber.sibling;
       }
@@ -244,7 +262,7 @@ export function fastLayoutExpression(maxNodes = 1200): string {
 
     try {
       hook.renderers.forEach(function (_, id) {
-        hook.getFiberRoots(id).forEach(function (r) { walk(r.current, false, false, false, -1); });
+        hook.getFiberRoots(id).forEach(function (r) { walk(r.current, false, false, false, -1, -1); });
       });
     } catch (e) {
       return JSON.stringify({ available: false, error: "fiber walk failed: " + String(e) });
@@ -258,8 +276,9 @@ export function fastLayoutExpression(maxNodes = 1200): string {
     }
 
     var out = new Array(hosts.length);
+    var clipOut = new Array(clips.length);
     var viewport = null;
-    var expected = hosts.length + (rootMeasurer ? 1 : 0);
+    var expected = hosts.length + clips.length + (rootMeasurer ? 1 : 0);
     var got = 0;
     var settle = null;
 
@@ -341,9 +360,31 @@ export function fastLayoutExpression(maxNodes = 1200): string {
       dedupeBuckets[bkey].push({ label: label, cx: cx, cy: cy });
     }
 
+    // A frame cut to what its clipping ancestors (scroll views, overflow:hidden)
+    // leave of it. null: nothing of it shows. A clip that could not be
+    // measured is ignored rather than allowed to hide everything inside it.
+    var clipMemo = {};
+    function clipRect(k) {
+      if (k < 0) return undefined;
+      if (Object.prototype.hasOwnProperty.call(clipMemo, k)) return clipMemo[k];
+      var own = clipOut[k];
+      var up = clipRect(clips[k].parent);
+      var res;
+      if (!own || !isFinite(own.x) || !isFinite(own.y) || !isFinite(own.w) || !isFinite(own.h)) res = up;
+      else if (up === null) res = null;
+      else res = up === undefined ? own : intersect(own, up);
+      clipMemo[k] = res;
+      return res;
+    }
+    function intersect(a, b) {
+      var x1 = Math.max(a.x, b.x), y1 = Math.max(a.y, b.y);
+      var x2 = Math.min(a.x + a.w, b.x + b.w), y2 = Math.min(a.y + a.h, b.y + b.h);
+      if (x2 <= x1 || y2 <= y1) return null;
+      return { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+    }
+
     function build() {
-      var els = [];
-      var seenExact = {};
+      var cands = [];
 
       // A LogBox *toast* is also a LogBox subtree and covers nothing. Only an
       // overlay that owns most of the viewport hides what is behind it.
@@ -379,22 +420,17 @@ export function fastLayoutExpression(maxNodes = 1200): string {
         var h = hosts[i];
         if (!h.labelled) continue;
         var vis = clip(r);
+        // Then what the scroll views and overflow:hidden views around it show:
+        // a row scrolled past a list's edge sits under the header or the tab
+        // bar, inside the window but not on screen.
+        var anc = clipRect(h.clip);
+        if (vis && anc !== undefined) vis = anc === null ? null : intersect(vis, anc);
         var cx = Math.round((vis || r).x + (vis || r).w / 2);
         var cy = Math.round((vis || r).y + (vis || r).h / 2);
-        var dedupeLabel = (h.text || "") + "|" + (h.testID || "") + "|" + (h.placeholder || "");
-        if (h.text || h.testID || h.placeholder) {
-          if (isNearDuplicate(dedupeLabel, cx, cy)) continue;
-          rememberDedupe(dedupeLabel, cx, cy);
-        } else {
-          // Nothing to key on but the position: a row of unlabeled icon buttons
-          // all share the empty label, and a tolerant match there would delete
-          // real tap targets. Exact centres only, as before the tolerance.
-          var exactKey = cx + "," + cy;
-          if (seenExact[exactKey]) continue;
-          seenExact[exactKey] = 1;
-        }
 
         var e = { text: h.text, testID: h.testID, type: h.type, x: r.x, y: r.y, w: r.w, h: r.h };
+        if (h.press) e.pressable = true;
+        if (h.a11y) e.a11y = true;
         if (h.input) {
           e.input = true;
           if (h.placeholder) e.placeholder = h.placeholder;
@@ -403,11 +439,12 @@ export function fastLayoutExpression(maxNodes = 1200): string {
         if (vis && (vis.x !== r.x || vis.y !== r.y || vis.w !== r.w || vis.h !== r.h)) e.visible = vis;
         if (!vis) { e.offscreen = true; }
         if (h.hidden) { e.hidden = true; e.hiddenBy = "inactive-screen"; }
+        var underToast = -1;
         if (!e.hidden && !e.offscreen) {
           for (var tj = 0; tj < toastRects.length; tj++) {
             var tb = toastRects[tj];
             if (h.toast !== tb.id && cx >= tb.r.x && cx <= tb.r.x + tb.r.w && cy >= tb.r.y && cy <= tb.r.y + tb.r.h) {
-              e.hidden = true; e.hiddenBy = "covered"; tb.covers++;
+              e.hidden = true; e.hiddenBy = "covered"; underToast = tj;
               break;
             }
           }
@@ -448,15 +485,58 @@ export function fastLayoutExpression(maxNodes = 1200): string {
         // call it a container; text hosts are excluded so an RCTText nesting an
         // RCTVirtualText is not mistaken for one.
         var isTextHost = typeof h.type === "string" && /text/i.test(h.type);
-        if (!h.testID && !h.press && h.text && !isTextHost) {
+        if (!h.testID && !h.press && h.text && !h.a11y && !isTextHost) {
           var parts = [];
           for (var j = h.descStart; j < h.descEnd; j++) {
             var d = hosts[j];
-            if (d.text && !hasTextDescendant(j)) parts.push(d.text);
+            if (d.text && !d.a11y && !hasTextDescendant(j)) parts.push(d.text);
           }
           if (parts.length >= 1 && parts.join("") === h.text) e.container = true;
         }
-        els.push(e);
+        cands.push({
+          e: e, cx: cx, cy: cy, toast: underToast,
+          label: (h.text || "") + "|" + (h.testID || "") + "|" + (h.placeholder || ""),
+          keyed: !!(h.text || h.testID || h.placeholder),
+          // Which of two near-duplicates survives. A visible element beats a
+          // hidden twin (the same screen pushed twice keeps the one underneath
+          // mounted at the same coordinates, and it is walked first), and the
+          // real text host beats a wrapper that only borrowed its label — the
+          // wrapper is walked first and used to evict the RCTText, then got
+          // flagged a container and vanished from the listing altogether.
+          rank: (h.hidden || underToast >= 0 ? 2 : 0) + (e.container ? 1 : 0)
+        });
+      }
+
+      // D5: a Text and its inner spans, or an icon and its nested svg layers,
+      // are one tap target whose measured centres drift 2-17px apart; a real
+      // second "Dismiss" elsewhere must still count. Candidates claim their
+      // spot best rank first (tree order within a rank), and the output keeps
+      // tree order.
+      var order = [];
+      for (var oc = 0; oc < cands.length; oc++) order.push(oc);
+      order.sort(function (a, z) { return cands[a].rank - cands[z].rank || a - z; });
+      var keep = new Array(cands.length);
+      var seenExact = {};
+      for (var ok = 0; ok < order.length; ok++) {
+        var c = cands[order[ok]];
+        if (c.keyed) {
+          if (isNearDuplicate(c.label, c.cx, c.cy)) continue;
+          rememberDedupe(c.label, c.cx, c.cy);
+        } else {
+          // Nothing to key on but the position: a row of unlabeled icon buttons
+          // all share the empty label, and a tolerant match there would delete
+          // real tap targets. Exact centres only, as before the tolerance.
+          var exactKey = c.cx + "," + c.cy;
+          if (seenExact[exactKey]) continue;
+          seenExact[exactKey] = 1;
+        }
+        keep[order[ok]] = true;
+      }
+      var els = [];
+      for (var ke = 0; ke < cands.length; ke++) {
+        if (!keep[ke]) continue;
+        if (cands[ke].toast >= 0) toastRects[cands[ke].toast].covers++;
+        els.push(cands[ke].e);
       }
       return JSON.stringify({
         available: els.length > 0,
@@ -480,6 +560,12 @@ export function fastLayoutExpression(maxNodes = 1200): string {
         var stop = measureInto(hosts[idx].m, function (r) { out[idx] = r; onOne(); });
         setTimeout(function () { stop(null); }, 400);
       })(i);
+    }
+    for (var ci = 0; ci < clips.length; ci++) {
+      (function (idx) {
+        var stop = measureInto(clips[idx].m, function (r) { clipOut[idx] = r; onOne(); });
+        setTimeout(function () { stop(null); }, 400);
+      })(ci);
     }
 
     if (got >= expected) return build();

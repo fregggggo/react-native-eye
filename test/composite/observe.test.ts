@@ -109,6 +109,28 @@ describe("observe resilience", () => {
     expect(textBlock).toContain("boom");
   });
 
+  it("shows the errors and logs captured before the app's connection dropped", async () => {
+    const targets: any[] = [{ id: "t1", title: "App", deviceName: "n" }];
+    metro = await startFakeMetro({ port: 0, targets });
+    metro.setHandler("Runtime.enable", () => ({}));
+    metro.setHandler("Log.enable", () => ({}));
+    metro.setHandler("Runtime.evaluate", () => ({ result: { value: undefined } }));
+    const conn = await getRegistry().connect({ port: metro.port });
+    conn.logs.push({ seq: 1, level: "error", text: "about to crash", timestamp: 1 });
+    conn.errors.push({ seq: 1, kind: "exception", text: "TypeError: x is undefined", timestamp: 1 });
+    targets.length = 0;
+    conn.close();
+    await new Promise((r) => setTimeout(r, 20));
+    const server = makeServer();
+    registerObserveTools(server, { drivers: [driver] });
+    const res = await callTool(server, "observe", {});
+    const textBlock = res.content.find((c: any) => c.type === "text").text;
+    expect(textBlock).toContain("Home @50,20");
+    expect(textBlock).toContain("TypeError: x is undefined");
+    expect(textBlock).toContain("[error] about to crash");
+    expect(textBlock).toMatch(/not connected — .*captured before the connection dropped/s);
+  });
+
   it("works without a runtime connection, saying which sections need one", async () => {
     getRegistry().reset();
     const server = makeServer();

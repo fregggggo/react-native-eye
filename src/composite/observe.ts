@@ -1,10 +1,10 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { deviceContext } from "../tools/context.js";
-import { captureScreenshotContent } from "../tools/screenshot.js";
-import { captureLayoutWithSource, type LayoutSource } from "../tools/layout.js";
+import { captureScreenshot } from "../tools/screenshot.js";
+import { captureLayoutWithSource, layoutWarning, type LayoutSource } from "../tools/layout.js";
 import { formatLayout } from "../layout/elements.js";
-import { truncate } from "../core/format.js";
+import { truncate, lostNote } from "../core/format.js";
 import { toToolError } from "../core/errors.js";
 import type { DeviceDriver } from "../drivers/types.js";
 
@@ -14,7 +14,10 @@ export async function observeInternal(
   opts?: { drivers?: DeviceDriver[]; device?: string },
   o?: { withScreenshot?: boolean; withLayout?: boolean; fullRes?: boolean; source?: LayoutSource },
 ): Promise<{ content: any[] }> {
-  const { driver, udid, conn } = await deviceContext(opts);
+  const { driver, udid, conn: live, lost } = await deviceContext(opts);
+  // A dropped connection still holds the errors and logs it captured — the
+  // moment the app crashed is when they matter most.
+  const conn = live ?? lost?.conn;
   const withScreenshot = o?.withScreenshot ?? true;
   const withLayout = o?.withLayout ?? true;
 
@@ -23,7 +26,7 @@ export async function observeInternal(
   // are needed most.
   const [shot, layout] = await Promise.all([
     withScreenshot
-      ? captureScreenshotContent(driver, udid, { fullRes: o?.fullRes }).then(
+      ? captureScreenshot(driver, udid, { fullRes: o?.fullRes }).then(
           (c) => ({ ok: true as const, c }),
           (e) => ({ ok: false as const, e }),
         )
@@ -39,8 +42,14 @@ export async function observeInternal(
   const content: any[] = [];
   const sections: string[] = [];
 
-  if (shot && shot.ok) content.push(shot.c);
-  else if (shot) sections.push(`SCREENSHOT: (unavailable: ${reason(shot.e)})`);
+  // First, before anything else: the elements and the screenshot then show
+  // two different apps, and the caller must not act on the elements.
+  if (layout && layout.ok && layout.c.appState) sections.push(layoutWarning(layout.c).trimEnd());
+
+  if (shot && shot.ok) {
+    content.push(shot.c.image);
+    if (shot.c.scaleNote) sections.push(`SCREENSHOT: ${shot.c.scaleNote}`);
+  } else if (shot) sections.push(`SCREENSHOT: (unavailable: ${reason(shot.e)})`);
 
   if (layout) {
     sections.push(
@@ -54,8 +63,10 @@ export async function observeInternal(
     // Pulls in the redboxes LogBox swallowed before reporting "none".
     // Re-assert first: an error interceptor the app unplugged (field test
     // D26) would otherwise leave "none" here under a redbox.
-    await conn.installInterceptors("errors");
-    await conn.drainErrors().catch(() => {});
+    if (live) {
+      await conn.installInterceptors("errors");
+      await conn.drainErrors().catch(() => {});
+    }
     const errs = conn.errors.last(5);
     sections.push(
       `ERRORS:\n${
@@ -71,6 +82,7 @@ export async function observeInternal(
     sections.push(
       `LOGS${gapNote}:\n${logs.length ? logs.map((l) => `[${l.level}] ${truncate(l.text, 200)}`).join("\n") : "none"}`,
     );
+    if (lost) sections.push(lostNote(lost.reason).trim());
   } else {
     sections.push("ERRORS: (no runtime connection — run connect)");
     sections.push("LOGS: (no runtime connection — run connect)");
@@ -88,11 +100,18 @@ export function registerObserveTools(server: McpServer, opts?: { drivers?: Devic
       description:
         "One-shot snapshot of the screen: screenshot + interactive elements + recent errors + recent logs. Sections are independent — one failing does not lose the rest. Prefer this over separate screenshot/get_layout/get_logs calls.",
       inputSchema: {
-        screenshot: z.boolean().optional(),
-        full_res: z.boolean().optional(),
-        source: z.enum(["js", "os", "auto"]).optional(),
-        device: z.string().optional(),
+        screenshot: z.boolean().optional().describe("Include the screenshot (default true)."),
+        full_res: z
+          .boolean()
+          .optional()
+          .describe("Send the screenshot at full resolution instead of downscaled to 800 px on its longest side."),
+        source: z
+          .enum(["js", "os", "auto"])
+          .optional()
+          .describe("Layout capture path: js = app runtime, os = axe/uiautomator/runner, auto (default) = js, then os."),
+        device: z.string().optional().describe("Device udid/serial or name substring; default: the connected or only booted device."),
       },
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async ({ screenshot, full_res, source, device }) => {
       try {

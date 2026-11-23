@@ -323,3 +323,24 @@ describe("explicit search lists all matches (D8)", () => {
     expect(out).toContain("(+30 more matches not shown — narrow the search)");
   });
 });
+
+describe("accessibility labels and exact presence", () => {
+  const els = toElements([
+    { text: "Create", type: "RCTView", x: 200, y: 880, w: 40, h: 56, a11y: true, pressable: true } as any,
+    { text: "Row 12", x: 0, y: 100, w: 400, h: 40 },
+  ]);
+
+  it("lists an icon button under its accessibility label, marked as such", () => {
+    expect(describeElement(els[0])).toBe("Create (a11y label) @220,908");
+  });
+
+  it("taps it by that label", () => {
+    expect(findByText(els, "Create")).toBe(els[0]);
+  });
+
+  it("isPresent with exact does not take Row 12 for Row 1", () => {
+    expect(isPresent(els, { text: "Row 1" })).toBe(true);
+    expect(isPresent(els, { text: "Row 1", exact: true })).toBe(false);
+    expect(isPresent(els, { text: "Row 12", exact: true })).toBe(true);
+  });
+});

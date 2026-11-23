@@ -247,3 +247,48 @@ describe("screenshot", () => {
     expect(res.content[0].text).toContain(`${MAX_IMAGE_DIMENSION_PX}px`);
   });
 });
+
+describe("screenshot scale line", () => {
+  /** Just enough JPEG for its start-of-frame segment: SOI, an APP0, then SOF0. */
+  function makeJpegHeader(width: number, height: number): Buffer {
+    const app0 = Buffer.from([0xff, 0xe0, 0x00, 0x04, 0x00, 0x00]);
+    const sof = Buffer.alloc(11);
+    sof.set([0xff, 0xc0, 0x00, 0x11, 0x08], 0);
+    sof.writeUInt16BE(height, 5);
+    sof.writeUInt16BE(width, 7);
+    return Buffer.concat([Buffer.from([0xff, 0xd8]), app0, sof]);
+  }
+
+  function sipsTo(width: number, height: number) {
+    return (async (_cmd: string, args: string[]) => {
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(args[args.indexOf("--out") + 1], makeJpegHeader(width, height));
+      return { stdout: "", stdoutBuffer: Buffer.from(""), stderr: "" };
+    }) as any;
+  }
+
+  it("says how image pixels map to tap points when the inline image is downscaled", async () => {
+    await connect();
+    const phone = {
+      ...driver,
+      screenshotPng: async () => makePngHeader(1179, 2556),
+      screenScale: async () => 3,
+    } as unknown as DeviceDriver;
+    const server = makeServer();
+    registerScreenshotTools(server, { drivers: [phone], runner: sipsTo(800, 1734) });
+    const res = await callTool(server, "screenshot", {});
+    expect(res.content[0].type).toBe("image");
+    expect(res.content[1].text).toBe(
+      "Image is 800x1734, downscaled from 1179x2556 screen pixels: multiply a point's image coordinates by 0.491 to get tap coordinates (points).",
+    );
+  });
+
+  it("adds nothing at full resolution", async () => {
+    await connect();
+    const phone = { ...driver, screenshotPng: async () => makePngHeader(1179, 2556), screenScale: async () => 3 } as any;
+    const server = makeServer();
+    registerScreenshotTools(server, { drivers: [phone], runner: sipsTo(800, 1734) });
+    const res = await callTool(server, "screenshot", { full_res: true });
+    expect(res.content).toHaveLength(1);
+  });
+});

@@ -87,3 +87,49 @@ describe("elementAtPoint visibility", () => {
     expect(elementAtPoint(els, 10, 10)).toBeUndefined();
   });
 });
+
+describe("searchElements: type aliases and placeholders", () => {
+  // JS-path host names for an input, a label, a button, an image; one OS-path
+  // input (axe) and an Android EditText (uiautomator).
+  const screen = toElements([
+    { text: undefined, type: "RCTSinglelineTextInputView", x: 0, y: 0, w: 300, h: 40, input: true, placeholder: "Email" } as any,
+    { text: "Welcome", type: "RCTText", x: 0, y: 50, w: 200, h: 20 },
+    { text: "Go", type: "RCTView", x: 0, y: 80, w: 80, h: 40, pressable: true } as any,
+    { testID: "logo", type: "RCTImageView", x: 0, y: 130, w: 40, h: 40 },
+    { text: "Password", type: "SecureTextField", x: 0, y: 180, w: 300, h: 40 },
+    { text: "Code", type: "android.widget.EditText", x: 0, y: 230, w: 300, h: 40 },
+    { text: "Static", type: "android.widget.TextView", x: 0, y: 280, w: 300, h: 40 },
+  ]);
+  const types = (type: string) => searchElements(screen, { search: [], type }).map((e) => e.text ?? e.placeholder ?? e.testID);
+
+  it("finds inputs by input / TextInput / textinput — live, both returned nothing", () => {
+    expect(types("input")).toEqual(["Email", "Password", "Code"]);
+    expect(types("TextInput")).toEqual(["Email", "Password", "Code"]);
+    expect(types("textinput")).toEqual(["Email", "Password", "Code"]);
+  });
+
+  it("maps text, button, image to what each capture path calls them", () => {
+    expect(types("text")).toEqual(["Welcome", "Static"]);
+    expect(types("button")).toEqual(["Go"]);
+    expect(types("pressable")).toEqual(["Go"]);
+    expect(types("image")).toEqual(["logo"]);
+  });
+
+  it("still takes an exact host name, case-insensitively", () => {
+    expect(types("rcttext")).toEqual(["Welcome"]);
+    expect(types("android.widget.EditText")).toEqual(["Code"]);
+  });
+
+  it("matches an empty input by its placeholder", () => {
+    expect(searchElements(screen, { search: ["email"] }).map((e) => e.placeholder)).toEqual(["Email"]);
+  });
+
+  it("lists the types present, most common first", async () => {
+    const { typesPresent } = await import("../../src/layout/search.js");
+    expect(typesPresent(toElements([
+      { text: "a", type: "RCTText", x: 0, y: 0, w: 1, h: 1 },
+      { text: "b", type: "RCTText", x: 0, y: 0, w: 1, h: 1 },
+      { text: "c", type: "RCTView", x: 0, y: 0, w: 1, h: 1 },
+    ]))).toBe("RCTText (2), RCTView (1)");
+  });
+});

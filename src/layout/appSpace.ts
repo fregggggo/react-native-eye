@@ -96,6 +96,16 @@ export function resetAppSpaceCache(): void {
   originCache.clear();
 }
 
+/**
+ * Whether a root frame has been seen on this device. Without one an Android
+ * origin cannot be calibrated (see `calibrate`) and the visible-frame guess
+ * stands — 144 px off on an app whose root does not start there. A caller
+ * about to convert a point with no layout behind it reads the root first.
+ */
+export function hasCachedViewport(udid: string): boolean {
+  return !!originCache.get(udid)?.vp;
+}
+
 function viewportKey(vp?: Rect | null): string | undefined {
   if (!vp) return undefined;
   return [vp.x, vp.y, vp.w, vp.h].map((n) => Math.round(n * 10) / 10).join(",");

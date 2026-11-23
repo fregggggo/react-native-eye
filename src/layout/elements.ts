@@ -20,6 +20,10 @@ export type Element = RawElement & {
    * `testID` on the descendant, which resolves to the same point.
    */
   labelFrom?: string;
+  /** JS layout: the label is the host's accessibilityLabel / aria-label — it has no visible text. */
+  a11y?: boolean;
+  /** JS layout: the host carries a press handler of its own. */
+  pressable?: boolean;
 };
 
 /**
@@ -76,8 +80,11 @@ export function describeElement(e: Element): string {
   // `text` here rather than falling straight through to testID/"?".
   // D17: a pressable with nothing of its own borrows the icon testID inside it,
   // marked "(icon)" so it is never mistaken for the element's own label.
+  // An accessibility label is a name the caller can tap by, not text anyone
+  // can see on screen — marked so a screenshot that shows no such word is
+  // not a contradiction.
   const own = e.text ?? e.placeholder ?? e.testID;
-  const label = own ?? (e.labelFrom ? `${e.labelFrom} (icon)` : "?");
+  const label = own !== undefined ? (e.a11y && e.text ? `${own} (a11y label)` : own) : e.labelFrom ? `${e.labelFrom} (icon)` : "?";
   const mark = isVisible(e) ? "" : ` (${e.offscreen ? "off-screen" : "hidden"})`;
   // Only inputs ever carry a value, so this never adds a column for anything else.
   const val = e.input && e.value ? ` = "${e.value}"` : "";
@@ -151,18 +158,56 @@ export function findByText(els: Element[], text: string): Element {
  * one on screen, so without this an expect/wait_for passes on a screen the user
  * is not even looking at.
  */
-export function isPresent(els: Element[], sel: { text?: string; testID?: string }): boolean {
+export function isPresent(els: Element[], sel: { text?: string; testID?: string; exact?: boolean }): boolean {
   const visible = els.filter(isVisible);
   if (sel.testID) return visible.some((e) => e.testID === sel.testID);
   if (sel.text) {
     const q = sel.text.toLowerCase();
     // Matches what the listing shows: an empty input appears under its placeholder.
+    // `exact`: "Row 1" is not "Row 12", and "Saved" is not "Unsaved".
     return visible.some((e) => {
       const label = e.text ?? e.placeholder ?? "";
-      return label === sel.text || label.toLowerCase().includes(q);
+      return label === sel.text || (!sel.exact && label.toLowerCase().includes(q));
     });
   }
   return false;
+}
+
+/**
+ * Every element a selector names, by the tiers `findByText` uses: exact text,
+ * then an empty input's exact placeholder, then substrings — the first tier
+ * with any match is the answer. "Row 1" therefore means the row labelled
+ * "Row 1" whenever there is one, never "Row 10"…"Row 19" as well. Visibility
+ * is not considered: callers looking for something off-screen filter after.
+ */
+export function matchingElements(els: Element[], sel: { text?: string; testID?: string }): Element[] {
+  if (sel.testID) return els.filter((e) => e.testID === sel.testID);
+  const text = sel.text;
+  if (!text) return [];
+  const q = text.toLowerCase();
+  const tiers: ((e: Element) => boolean)[] = [
+    (e) => e.text === text,
+    (e) => !e.text && e.placeholder === text,
+    (e) => !!e.text && e.text.toLowerCase().includes(q),
+    (e) => !e.text && !!e.placeholder && e.placeholder.toLowerCase().includes(q),
+  ];
+  for (const t of tiers) {
+    const hits = els.filter(t);
+    if (hits.length) return hits;
+  }
+  return [];
+}
+
+/**
+ * Whether `e` is the element `target` was — same testID when it has one,
+ * otherwise the same label. How an element that was resolved once is found
+ * again after a scroll moved it: a substring here is how "Row 1" was reported
+ * visible because "Row 12" was.
+ */
+export function sameElement(e: Element, target: Element): boolean {
+  if (target.testID) return e.testID === target.testID;
+  const label = target.text ?? target.placeholder;
+  return label !== undefined && (e.text ?? e.placeholder) === label;
 }
 
 function key(e: Element): string {
@@ -176,7 +221,8 @@ function key(e: Element): string {
   // layoutDiff's before/after Map lookup matching the same element by the
   // same key — only the rendered text changes, not which elements pair up.
   const own = e.text ?? e.placeholder ?? e.testID;
-  return own ?? (e.labelFrom ? `${e.labelFrom} (icon)` : `${e.cx},${e.cy}`);
+  if (own !== undefined) return e.a11y && e.text ? `${own} (a11y label)` : own;
+  return e.labelFrom ? `${e.labelFrom} (icon)` : `${e.cx},${e.cy}`;
 }
 
 // Cap on an explicit-search listing (opts.listAll). The suppression rules this

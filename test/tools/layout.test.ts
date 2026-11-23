@@ -427,3 +427,67 @@ describe("captureLayoutWithSource: OS path provenance", () => {
     expect(out.note).toBe("js layout unavailable: no measurable elements; runner starting");
   });
 });
+
+describe("get_layout on an app that is not in the foreground", () => {
+  async function connectBackgrounded(state: string) {
+    metro = await startFakeMetro({ port: 0 });
+    metro.setHandler("Runtime.enable", () => ({}));
+    metro.setHandler("Log.enable", () => ({}));
+    metro.setHandler("Runtime.evaluate", (p) => {
+      const e = String(p.expression);
+      if (e.includes("rne:appstate")) return evalEnvelope(JSON.stringify({ state }));
+      if (e.includes("__REACT_DEVTOOLS_GLOBAL_HOOK__")) {
+        return evalEnvelope(
+          JSON.stringify({
+            available: true,
+            viewport: { x: 0, y: 0, w: 400, h: 800 },
+            els: [{ text: "Feed", type: "RCTText", x: 0, y: 0, w: 100, h: 40 }],
+          }),
+        );
+      }
+      return evalEnvelope(undefined);
+    });
+    await getRegistry().connect({ port: metro.port });
+  }
+
+  it("leads with a warning and names the state in the marker", async () => {
+    await connectBackgrounded("background");
+    const server = makeServer();
+    registerLayoutTools(server, { drivers: [driverWith([])] });
+    const res = await callTool(server, "get_layout", {});
+    const out = res.content[0].text as string;
+    expect(out.split("\n")[0]).toBe(
+      "WARNING: the app is not in the foreground (AppState: background). The elements below are the app's React tree, not what the device shows. Bring it to the front with launch_app before acting on them.",
+    );
+    expect(out).toContain("(layout: js — app not in the foreground (AppState: background))");
+  });
+
+  it("says nothing extra when the app is active", async () => {
+    await connectBackgrounded("active");
+    const server = makeServer();
+    registerLayoutTools(server, { drivers: [driverWith([])] });
+    const res = await callTool(server, "get_layout", {});
+    expect(res.content[0].text).not.toContain("WARNING");
+    expect(res.content[0].text).toContain("(layout: js)");
+  });
+});
+
+describe("get_layout type filter", () => {
+  it("lists the types on screen when the filter matches nothing", async () => {
+    await connect();
+    const server = makeServer();
+    registerLayoutTools(server, {
+      drivers: [
+        driverWith([
+          { text: "A", type: "StaticText", x: 0, y: 0, w: 10, h: 10 },
+          { text: "B", type: "StaticText", x: 0, y: 20, w: 10, h: 10 },
+          { text: "Go", type: "Button", x: 0, y: 40, w: 10, h: 10 },
+        ]),
+      ],
+    });
+    const res = await callTool(server, "get_layout", { type: "Switch" });
+    expect(res.content[0].text).toContain(
+      '(no matching elements) — no element of type "Switch". Types on screen: StaticText (2), Button (1); aliases: input, text, button, image, scroll.',
+    );
+  });
+});

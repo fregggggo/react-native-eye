@@ -2,8 +2,9 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { deviceContext } from "./context.js";
 import { toElements, formatLayout, withdrawOverlay, type Element } from "../layout/elements.js";
-import { searchElements, elementAtPoint } from "../layout/search.js";
+import { searchElements, elementAtPoint, typesPresent, TYPE_ALIAS_NAMES } from "../layout/search.js";
 import { fastLayoutExpression, viewportExpression } from "../layout/fastLayout.js";
+import { probeAppState, isBackground, backgroundWarning } from "../input/appState.js";
 import { text } from "../core/format.js";
 import { toToolError, UserInputError, DriverError } from "../core/errors.js";
 import type { DeviceDriver, RawElement, Viewport } from "../drivers/types.js";
@@ -17,7 +18,18 @@ export type LayoutSource = "js" | "os" | "auto";
  * `LayoutSource` is unchanged — `source: "os"` still means "not the JS path"
  * and the driver picks runner vs axe/adb.
  */
-export type CapturedLayout = { els: Element[]; source: "js" | "os" | "runner"; note?: string; viewport?: Viewport };
+export type CapturedLayout = {
+  els: Element[];
+  source: "js" | "os" | "runner";
+  note?: string;
+  viewport?: Viewport;
+  /**
+   * JS path only: the app's AppState when it is not in the foreground
+   * ("background" / "inactive"). The elements are then the React tree of an
+   * app the device is not showing, and every response must lead with that.
+   */
+  appState?: string;
+};
 
 const JS_LAYOUT_TIMEOUT_MS = 15000;
 
@@ -59,7 +71,12 @@ export async function captureLayoutWithSource(
   let note: string | undefined;
   if (source !== "os" && opts?.conn) {
     try {
-      const raw = await opts.conn.evaluate(fastLayoutExpression(), { timeoutMs: JS_LAYOUT_TIMEOUT_MS });
+      // The AppState read rides alongside the capture, so it costs no extra
+      // wait: the capture is the slower of the two.
+      const [raw, appState] = await Promise.all([
+        opts.conn.evaluate(fastLayoutExpression(), { timeoutMs: JS_LAYOUT_TIMEOUT_MS }),
+        probeAppState(opts.conn),
+      ]);
       const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
       if (parsed?.available && Array.isArray(parsed.els) && parsed.els.length > 0) {
         // The overlay verdict is the one thing here the runtime cannot vouch
@@ -94,11 +111,13 @@ export async function captureLayoutWithSource(
             );
           }
         }
+        if (isBackground(appState)) notes.unshift(`app not in the foreground (AppState: ${appState})`);
         return {
           els,
           source: "js",
           viewport: parsed.viewport ? toScreenRect(parsed.viewport as Viewport, space) : undefined,
           note: notes.length ? notes.join("; ") : undefined,
+          appState: isBackground(appState) ? appState : undefined,
         };
       }
       // The expression reports *why* it found nothing; hiding that behind a
@@ -150,22 +169,42 @@ export function layoutMarker(c: CapturedLayout): string {
   return `\n(layout: ${c.source}${c.note ? ` — ${c.note}` : ""})`;
 }
 
+/** The line a response leads with when the captured app is not on screen; "" otherwise. */
+export function layoutWarning(c: CapturedLayout): string {
+  return c.appState ? `${backgroundWarning(c.appState)}\n` : "";
+}
+
 export function registerLayoutTools(server: McpServer, opts?: { drivers?: DeviceDriver[] }): void {
   server.registerTool(
     "get_layout",
     {
       title: "Get layout",
       description:
-        "Interactive on-screen elements with center coordinates. Elements scrolled out of view are listed separately as off-screen. Optional: filter with search terms (matched against text/testID), narrow by element type, or pass at:{x,y} to get the element at a point. source picks the capture path (js = app runtime, os = axe/uiautomator, default auto).",
+        "Interactive on-screen elements with center coordinates. Elements scrolled out of view are listed separately as off-screen. Optional: filter with search terms (matched against text/testID/placeholder), narrow by element type, or pass at:{x,y} to get the element at a point. source picks the capture path (js = app runtime, os = axe/uiautomator, default auto). Leads with a warning when the app is not in the foreground.",
       inputSchema: {
-        search: z.array(z.string()).optional(),
-        type: z.string().optional(),
-        match: z.enum(["substring", "exact"]).optional(),
-        case_sensitive: z.boolean().optional(),
-        at: z.object({ x: z.number(), y: z.number() }).optional(),
-        source: z.enum(["js", "os", "auto"]).optional(),
-        device: z.string().optional(),
+        search: z
+          .array(z.string())
+          .optional()
+          .describe("Terms matched against each element's text, testID and placeholder; any term may match."),
+        type: z
+          .string()
+          .optional()
+          .describe(
+            `Element type: an alias (${TYPE_ALIAS_NAMES.join(", ")}) or a host/role name such as RCTText or StaticText; case-insensitive.`,
+          ),
+        match: z.enum(["substring", "exact"]).optional().describe("How search terms match (default substring)."),
+        case_sensitive: z.boolean().optional().describe("Match search terms case-sensitively (default false)."),
+        at: z
+          .object({ x: z.number(), y: z.number() })
+          .optional()
+          .describe("Return the visible element at this point instead of a listing (screen units)."),
+        source: z
+          .enum(["js", "os", "auto"])
+          .optional()
+          .describe("Capture path: js = app runtime, os = axe/uiautomator/runner, auto (default) = js, then os."),
+        device: z.string().optional().describe("Device udid/serial or name substring; default: the connected or only booted device."),
       },
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async ({ search, type, match, case_sensitive, at, source, device }) => {
       try {
@@ -173,12 +212,13 @@ export function registerLayoutTools(server: McpServer, opts?: { drivers?: Device
         const { driver, udid, conn } = await deviceContext({ ...opts, device });
         const captured = await captureLayoutWithSource(driver, udid, { conn, source });
         const marker = layoutMarker(captured);
+        const warn = layoutWarning(captured);
         const els = captured.els;
         if (at) {
           const el = elementAtPoint(els, at.x, at.y);
-          if (!el) return text(`No element at (${at.x}, ${at.y}).${marker}`);
+          if (!el) return text(`${warn}No element at (${at.x}, ${at.y}).${marker}`);
           return text(
-            `${el.text ?? el.testID ?? "?"}${el.type ? ` [${el.type}]` : ""} @${el.cx},${el.cy} (${el.x},${el.y} ${el.w}x${el.h})${el.offscreen ? " OFF-SCREEN" : ""}${marker}`,
+            `${warn}${el.text ?? el.testID ?? "?"}${el.type ? ` [${el.type}]` : ""} @${el.cx},${el.cy} (${el.x},${el.y} ${el.w}x${el.h})${el.offscreen ? " OFF-SCREEN" : ""}${marker}`,
           );
         }
         if (search || type) {
@@ -188,9 +228,17 @@ export function registerLayoutTools(server: McpServer, opts?: { drivers?: Device
             match,
             caseSensitive: case_sensitive,
           });
-          return text((hits.length ? formatLayout(hits, { listAll: true }) : "(no matching elements)") + marker);
+          if (hits.length) return text(warn + formatLayout(hits, { listAll: true }) + marker);
+          // A type that matches nothing is usually a type name this capture path
+          // does not use — saying which names it does use is the next step.
+          const typed = type ? searchElements(els, { search: [], type }) : els;
+          const why =
+            type && typed.length === 0
+              ? ` — no element of type "${type}". Types on screen: ${typesPresent(els) || "none reported"}; aliases: ${TYPE_ALIAS_NAMES.join(", ")}.`
+              : "";
+          return text(`${warn}(no matching elements)${why}${marker}`);
         }
-        return text(formatLayout(els) + marker);
+        return text(warn + formatLayout(els) + marker);
       } catch (err) {
         return toToolError(err);
       }

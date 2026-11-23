@@ -40,6 +40,23 @@ function readPngDimensions(buf: Buffer): { width: number; height: number } | und
   return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
 }
 
+// The same for our own JPEG output: the dimensions sit in the first
+// start-of-frame segment. Everything before it is skipped by its length.
+function readJpegDimensions(buf: Buffer): { width: number; height: number } | undefined {
+  if (buf.length < 4 || buf[0] !== 0xff || buf[1] !== 0xd8) return undefined;
+  let i = 2;
+  while (i + 9 < buf.length) {
+    if (buf[i] !== 0xff) return undefined;
+    const marker = buf[i + 1];
+    // SOF0-SOF15, minus DHT (C4), JPG (C8) and DAC (CC), which share the range.
+    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+      return { height: buf.readUInt16BE(i + 5), width: buf.readUInt16BE(i + 7) };
+    }
+    i += 2 + buf.readUInt16BE(i + 2);
+  }
+  return undefined;
+}
+
 function formatMb(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
@@ -152,24 +169,66 @@ async function compressInline(png: Buffer, runner: typeof run): Promise<Buffer |
   return undefined;
 }
 
-export async function captureScreenshotContent(
+export type ScreenshotImage = { type: "image"; data: string; mimeType: "image/png" | "image/jpeg" };
+
+/**
+ * How an image pixel maps to a tap coordinate, when the inline image is not at
+ * the device's own resolution. Without it a point read off an 800 px wide
+ * image of a 1206 px screen is tapped 0.66× from where it is — the most common
+ * way a screenshot-guided tap misses.
+ */
+async function scaleNote(
+  driver: DeviceDriver,
+  udid: string,
+  png: Buffer,
+  jpg: Buffer,
+): Promise<string | undefined> {
+  const orig = readPngDimensions(png);
+  if (!orig || orig.width <= 0) return undefined;
+  // Every downscaler resamples to 800 px wide; the JPEG says exactly.
+  const out = readJpegDimensions(jpg) ?? { width: 800, height: Math.round((orig.height * 800) / orig.width) };
+  if (out.width <= 0 || out.width >= orig.width) return undefined;
+  const pxPerImagePx = orig.width / out.width;
+  const screenScale = await driver.screenScale?.(udid).catch(() => undefined);
+  const round = (n: number) => Math.round(n * 1000) / 1000;
+  const head = `Image is ${out.width}x${out.height}, downscaled from ${orig.width}x${orig.height} screen pixels:`;
+  if (typeof screenScale === "number" && screenScale > 0) {
+    return `${head} multiply a point's image coordinates by ${round(pxPerImagePx / screenScale)} to get tap coordinates (${
+      driver.platform === "android" ? "pixels" : "points"
+    }).`;
+  }
+  return `${head} multiply a point's image coordinates by ${round(pxPerImagePx)} to get screen pixels.`;
+}
+
+/** The inline image, plus the image→tap scale line when it was downscaled. */
+export async function captureScreenshot(
   driver: DeviceDriver,
   udid: string,
   opts?: { fullRes?: boolean; runner?: typeof run },
-): Promise<{ type: "image"; data: string; mimeType: "image/png" | "image/jpeg" }> {
+): Promise<{ image: ScreenshotImage; scaleNote?: string }> {
   const png = await driver.screenshotPng(udid);
   const fullRes = opts?.fullRes ?? false;
   let buf: Buffer = png;
   let mimeType: "image/png" | "image/jpeg" = "image/png";
+  let note: string | undefined;
   if (!fullRes) {
     const jpg = await compressInline(png, opts?.runner ?? run);
     if (jpg) {
       buf = jpg;
       mimeType = "image/jpeg";
+      note = await scaleNote(driver, udid, png, jpg);
     }
   }
   assertWithinInlineLimits(buf, fullRes);
-  return { type: "image", data: buf.toString("base64"), mimeType };
+  return { image: { type: "image", data: buf.toString("base64"), mimeType }, scaleNote: note };
+}
+
+export async function captureScreenshotContent(
+  driver: DeviceDriver,
+  udid: string,
+  opts?: { fullRes?: boolean; runner?: typeof run },
+): Promise<ScreenshotImage> {
+  return (await captureScreenshot(driver, udid, opts)).image;
 }
 
 export function registerScreenshotTools(
@@ -183,19 +242,30 @@ export function registerScreenshotTools(
       description:
         "Capture the current screen. Without output_path returns an inline JPEG downscaled to 800px (pass full_res:true for the native PNG); an image that would still be too large for the caller fails with an actionable error instead of being returned. With output_path saves to a file (format png/jpeg; mask is iOS-only) and returns the path.",
       inputSchema: {
-        output_path: z.string().optional(),
-        format: z.enum(["png", "jpeg"]).optional(),
-        mask: z.enum(["ignored", "alpha", "black"]).optional(),
-        full_res: z.boolean().optional(),
-        device: z.string().optional(),
+        output_path: z
+          .string()
+          .optional()
+          .describe("Save to this file instead of returning the image inline; returns the path."),
+        format: z.enum(["png", "jpeg"]).optional().describe("File format with output_path (default png)."),
+        mask: z
+          .enum(["ignored", "alpha", "black"])
+          .optional()
+          .describe("iOS only, with output_path: how the device's rounded-corner mask is drawn."),
+        full_res: z
+          .boolean()
+          .optional()
+          .describe("Return the native-resolution PNG inline instead of an 800 px wide JPEG."),
+        device: z.string().optional().describe("Device udid/serial or name substring; default: the connected or only booted device."),
       },
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async ({ output_path, format, mask, full_res, device }) => {
       try {
         const { driver, udid } = await deviceContext({ ...opts, device });
         if (!output_path) {
+          const shot = await captureScreenshot(driver, udid, { fullRes: full_res, runner: opts?.runner });
           return {
-            content: [await captureScreenshotContent(driver, udid, { fullRes: full_res, runner: opts?.runner })],
+            content: shot.scaleNote ? [shot.image, { type: "text" as const, text: shot.scaleNote }] : [shot.image],
           };
         }
         if (mask && driver.platform !== "ios") throw new UserInputError("mask is iOS-only.");

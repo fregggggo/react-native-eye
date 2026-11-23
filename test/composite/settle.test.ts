@@ -77,10 +77,11 @@ describe("settleLayout", () => {
       return orig(u);
     };
     const els = await settleLayout(driver, "u", { sleep: async () => {}, conn });
-    // evaluate is called twice: once for the settle expression, once by the
-    // fast-layout attempt inside captureLayout (whose "settled" reply fails
-    // JSON.parse → OS fallback → rawLayout).
-    expect(evals).toBe(2);
+    // evaluate is called three times: once for the settle expression, then by
+    // the fast-layout attempt inside captureLayout (whose "settled" reply fails
+    // JSON.parse → OS fallback → rawLayout) and the AppState read that runs
+    // alongside it.
+    expect(evals).toBe(3);
     expect(captures).toBe(1);
     expect(els[0].text).toBe("A");
   });
