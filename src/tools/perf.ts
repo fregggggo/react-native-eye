@@ -10,6 +10,7 @@ const DEFAULT_SAMPLE_S = 3;
 const MAX_SAMPLE_S = 30;
 const DEFAULT_FPS_MS = 2000;
 const MAX_FPS_MS = 15000;
+const DEVICE_PARAM = "Device udid/serial or name (substring). Default: the connected app's device, else the only booted one.";
 /** Threads worth printing: enough to show main/js plus whatever else is hot. */
 const MAX_THREAD_ROWS = 8;
 const MAX_FRAMES_PER_THREAD = 5;
@@ -151,15 +152,24 @@ function formatFrameStats(stats: FrameStats): string[] {
     return lines;
   }
   const d = stats.frameDurationsMs;
-  const produced = (d.length / stats.durationMs) * 1000;
+  // The per-frame rows are a ring buffer of the last 120 frames (AOSP
+  // FrameInfoVisualizer), so past 2 s at 60 Hz their count stopped growing and
+  // a 10 s window read as 12 frames/s. The platform's own counter covers the
+  // whole window since `reset`.
+  const total = Math.max(stats.totalRendered ?? 0, d.length);
+  const produced = (total / stats.durationMs) * 1000;
   const janky = stats.jankyFrames !== undefined ? ` janky ${stats.jankyFrames} (${(stats.jankyPct ?? 0).toFixed(1)}%)` : "";
-  const plural = d.length === 1 ? "frame" : "frames";
-  lines.push(`  ${d.length} ${plural} in ${stats.durationMs}ms → ${produced.toFixed(1)} frames/s produced;${janky}`);
+  const plural = total === 1 ? "frame" : "frames";
+  lines.push(`  ${total} ${plural} in ${stats.durationMs}ms → ${produced.toFixed(1)} frames/s produced;${janky}`);
+  const scope = d.length < total ? ` (last ${d.length} frames)` : "";
   lines.push(
-    `  frame latency (vsync → completed): p50 ${ms(percentile(d, 50))}  p90 ${ms(percentile(d, 90))}  p99 ${ms(
+    `  frame latency (vsync → completed)${scope}: p50 ${ms(percentile(d, 50))}  p90 ${ms(percentile(d, 90))}  p99 ${ms(
       percentile(d, 99),
     )}`,
   );
+  if (total > 120 && d.length < total) {
+    lines.push("  Android keeps per-frame timing for the last 120 frames only; the count and jank cover the whole window.");
+  }
   lines.push("  Over ~16.7ms at 60Hz is a missed frame. Only frames the app actually produced are counted:");
   lines.push("  an idle screen renders a handful of frames, which is not a low frame rate.");
   return lines;
@@ -181,10 +191,11 @@ export function registerPerfTools(server: McpServer, opts?: { drivers?: DeviceDr
       description:
         "Profile the running app's threads for a few seconds and report which one is hot — the UI/main thread, the JS thread, or something else. iOS simulator: macOS `sample`, with native call-graph frames. Android: `top -H`, per-thread %CPU only (no frames).",
       inputSchema: {
-        duration_s: z.number().optional(),
-        app_id: z.string().optional(),
-        device: z.string().optional(),
+        duration_s: z.number().optional().describe(`Sampling window in seconds (default ${DEFAULT_SAMPLE_S}, 1–${MAX_SAMPLE_S}).`),
+        app_id: z.string().optional().describe("Bundle id (iOS) / package name (Android). Default: the connected app."),
+        device: z.string().optional().describe(DEVICE_PARAM),
       },
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async ({ duration_s, app_id, device }) => {
       try {
@@ -209,10 +220,11 @@ export function registerPerfTools(server: McpServer, opts?: { drivers?: DeviceDr
       description:
         "Measure frame timing for a short window. Android also reports real UI-thread frames from dumpsys gfxinfo; on the iOS simulator only the JS-thread requestAnimationFrame rate is available (UI-thread frames need a physical device and xctrace).",
       inputSchema: {
-        duration_ms: z.number().optional(),
-        app_id: z.string().optional(),
-        device: z.string().optional(),
+        duration_ms: z.number().optional().describe(`Measurement window in ms (default ${DEFAULT_FPS_MS}, 100–${MAX_FPS_MS}).`),
+        app_id: z.string().optional().describe("Bundle id (iOS) / package name (Android). Default: the connected app."),
+        device: z.string().optional().describe(DEVICE_PARAM),
       },
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async ({ duration_ms, app_id, device }) => {
       try {

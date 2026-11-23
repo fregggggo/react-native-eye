@@ -541,3 +541,84 @@ describe("reload_app when the old runtime is destroyed before the new one exists
     expect(msg).toMatch(/reinstalled automatically/);
   }, 15000);
 });
+
+// Review: launch_app {terminate_running} on the connected app answered
+// "Launched" at once, and the next call fell into the gap while the app loaded.
+describe("launch_app restarting the connected app", () => {
+  const targets: any[] = [];
+  async function connectTo(appId: string) {
+    targets.length = 0;
+    targets.push({ id: "1", title: "React Native", appId, deviceName: "iPhone 15" });
+    metro = await startFakeMetro({ port: 0, targets });
+    metro.setHandler("Runtime.evaluate", () => evalEnvelope(true));
+    await getRegistry().connect({ port: metro.port });
+  }
+  /** Kills the app (its debugger socket closes, its target goes) and brings it back after `backAfterMs`. */
+  const relaunching = (backAfterMs?: number, seen: string[] = []) =>
+    ({
+      ...driver,
+      launchApp: async (_u: string, appId: string, o: any) => {
+        seen.push(`${appId} ${o?.terminateRunning ? "restart" : "start"}`);
+        if (!o?.terminateRunning) return;
+        const t = targets.splice(0);
+        metro.dropClients();
+        if (backAfterMs !== undefined) setTimeout(() => targets.push(...t), backAfterMs);
+      },
+    }) as unknown as DeviceDriver;
+
+  it("waits for the restarted app's runtime to attach again, and says so", async () => {
+    await connectTo("com.x.app");
+    const old = getRegistry().active_or_null;
+    const server = makeServer();
+    registerDeviceTools(server, { drivers: [relaunching(700)], relaunchWaitMs: 5000 });
+    const res = await callTool(server, "launch_app", { app_id: "com.x.app", terminate_running: true });
+    expect(res.content[0].text).toMatch(/^Launched com\.x\.app\. Its JS runtime is attached again after \d/);
+    const now = getRegistry().active_or_null;
+    expect(now).not.toBe(old);
+    expect(now?.connected).toBe(true);
+  }, 10000);
+
+  it("says the app is still starting when its runtime has not come back within the wait", async () => {
+    await connectTo("com.x.app");
+    const server = makeServer();
+    registerDeviceTools(server, { drivers: [relaunching()], relaunchWaitMs: 1200 });
+    const t0 = Date.now();
+    const res = await callTool(server, "launch_app", { app_id: "com.x.app", terminate_running: true });
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toMatch(/has not attached again after 1\.\ds — the app is still starting/);
+    expect(Date.now() - t0).toBeLessThan(3000);
+  }, 10000);
+
+  it("waits for the runtime when it launches the connected app after that app died", async () => {
+    await connectTo("com.x.app");
+    // The app crashed: its socket closed and its target is gone.
+    const gone = targets.splice(0);
+    metro.dropClients();
+    await new Promise((r) => setTimeout(r, 50));
+    const coming = {
+      ...driver,
+      launchApp: async () => {
+        setTimeout(() => targets.push(...gone), 600);
+      },
+    } as unknown as DeviceDriver;
+    const server = makeServer();
+    registerDeviceTools(server, { drivers: [coming], relaunchWaitMs: 5000 });
+    const res = await callTool(server, "launch_app", { app_id: "com.x.app" });
+    expect(res.content[0].text).toMatch(/^Launched com\.x\.app\. Its JS runtime is attached again after \d/);
+    expect(getRegistry().active_or_null?.connected).toBe(true);
+  }, 10000);
+
+  it("does not wait for another app, or for a launch that restarts nothing", async () => {
+    await connectTo("com.x.app");
+    const seen: string[] = [];
+    const server = makeServer();
+    registerDeviceTools(server, { drivers: [relaunching(undefined, seen)], relaunchWaitMs: 5000 });
+    const t0 = Date.now();
+    expect((await callTool(server, "launch_app", { app_id: "com.x.app" })).content[0].text).toBe("Launched com.x.app.");
+    expect((await callTool(server, "launch_app", { app_id: "com.other", terminate_running: true })).content[0].text).toBe(
+      "Launched com.other.",
+    );
+    expect(Date.now() - t0).toBeLessThan(1000);
+    expect(seen).toEqual(["com.x.app start", "com.other restart"]);
+  });
+});

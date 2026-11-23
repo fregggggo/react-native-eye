@@ -1,4 +1,5 @@
 import type { NativePool } from "../native/pool.js";
+import { stopActiveRecording } from "../tools/recording.js";
 
 export type ShutdownProc = {
   on(event: string, fn: () => void): unknown;
@@ -42,9 +43,13 @@ export function installShutdownHooks(opts: {
         timer = setTimeout(resolve, graceMs);
       });
       await Promise.race([
-        opts.pool.shutdown({ killAfterMs: Math.max(0, graceMs - KILL_MARGIN_MS) }).catch((err: unknown) => {
-          log(`native driver shutdown failed: ${err instanceof Error ? err.message : String(err)}`);
-        }),
+        Promise.all([
+          opts.pool.shutdown({ killAfterMs: Math.max(0, graceMs - KILL_MARGIN_MS) }).catch((err: unknown) => {
+            log(`native driver shutdown failed: ${err instanceof Error ? err.message : String(err)}`);
+          }),
+          // A recorder would outlive us and never write its file out.
+          stopActiveRecording(),
+        ]),
         grace,
       ]);
       clearTimeout(timer);

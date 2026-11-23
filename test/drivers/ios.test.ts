@@ -125,7 +125,8 @@ function fakeSpawner() {
     spawned.push(`${cmd} ${args.join(" ")}`);
     return {
       exited: () => stopped,
-      stderr: () => "",
+      // simctl's own start line: record_video waits for it.
+      stderr: () => "Recording started\n",
       assertAlive: async () => {},
       stop: async () => {
         stopped = true;
@@ -381,7 +382,8 @@ describe("touch-free routes", () => {
     }) as any;
     const sample = await new IosDriver(runner).cpuSample!("UD1", "com.x.app", 3);
     expect(calls[0].args).toEqual(["simctl", "spawn", "UD1", "launchctl", "list"]);
-    expect(calls[1]).toEqual({ cmd: "sample", args: ["50571", "3"] });
+    // -file /dev/stdout: no report file left in /tmp (review #13).
+    expect(calls[1]).toEqual({ cmd: "sample", args: ["50571", "3", "-file", "/dev/stdout"] });
     expect(sample.pid).toBe(50571);
     expect(sample.durationS).toBe(3);
     // The JS thread sat in __psynch_cvwait the whole time: idle, not 50% hot.

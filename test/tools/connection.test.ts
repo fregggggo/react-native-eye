@@ -160,11 +160,12 @@ describe("connect warms the native driver", () => {
     expect(res.content[0].text).toMatch(/\nnative driver: starting in background \(0\.0\.1-a1b2c3d4\) — until it is ready, taps, swipes and layout use adb\.$/);
   });
 
-  it("reports an entry that is already ready without starting anything", async () => {
+  it("reports an entry that is already ready, and hands the foreground back to the app", async () => {
     await demoMetro();
     const { pool, warms } = fakePool({ before: { state: "ready", via: "simctl", startedMs: 5800 } });
     const res = await connectWith({ drivers: [iosDriver(["SIM-1", "iPhone 17 Pro"])], pool });
-    expect(warms).toEqual([]);
+    // warm() on a ready entry starts nothing: it only refocuses the app.
+    expect(warms).toEqual(["ios:SIM-1"]);
     expect(res.content[0].text).toMatch(/\nnative driver: ready \(reused, 0\.0\.1-6ee5255e\)$/);
   });
 

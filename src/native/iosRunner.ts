@@ -13,6 +13,12 @@ export type RunnerHandle = {
   pid?: number;
   via: "reused" | "simctl" | "xcodebuild";
   /**
+   * The app this start handed the foreground back to: the one it was given,
+   * or the one found running when none was. Absent for a reused runner (it
+   * took nothing) and when no app was known.
+   */
+  foreground?: string;
+  /**
    * `killAfterMs` bounds how long an xcodebuild child may take to exit on
    * SIGINT before it is SIGKILLed (session shutdown passes one shorter than
    * its grace period). Ignored by the other kinds.
@@ -94,13 +100,40 @@ const DEFAULT_DEPS: IosRunnerDeps = {
   now: () => Date.now(),
 };
 
-async function runnerPid(udid: string, bundleId: string, d: IosRunnerDeps): Promise<number | undefined> {
+/** `launchctl list` inside the simulator; "" when it cannot be read. */
+async function launchctlList(udid: string, d: IosRunnerDeps): Promise<string> {
   try {
-    const { stdout } = await d.run("xcrun", ["simctl", "spawn", udid, "launchctl", "list"], { timeoutMs: TIMEOUTS.list });
-    return parseAppPid(stdout, bundleId);
+    return (await d.run("xcrun", ["simctl", "spawn", udid, "launchctl", "list"], { timeoutMs: TIMEOUTS.list })).stdout;
   } catch {
-    return undefined;
+    return "";
   }
+}
+
+async function runnerPid(udid: string, bundleId: string, d: IosRunnerDeps): Promise<number | undefined> {
+  return parseAppPid(await launchctlList(udid, d), bundleId);
+}
+
+/**
+ * The one third-party app running on the simulator (launchctl's
+ * `UIKitApplication:<id>[…]` labels with a pid), Apple's and our own left
+ * out; undefined when there are none or several. A start nobody named an app
+ * for (a tool call before connect) hands the foreground back to it: launching
+ * the runner suspends whatever was in front, and leaving SpringBoard there
+ * sent the whole session to the home screen (field test on iOS 26.2).
+ */
+export function soleRunningApp(launchctl: string, runnerBundleId: string): string | undefined {
+  const apps = new Set<string>();
+  for (const line of launchctl.split("\n")) {
+    const cols = line.split("\t");
+    if (cols.length < 3) continue;
+    const pid = Number(cols[0].trim());
+    const m = /^UIKitApplication:([^[\s]+)/.exec(cols[2].trim());
+    if (!m || !Number.isInteger(pid) || pid <= 0) continue;
+    const id = m[1];
+    if (id === runnerBundleId || id.startsWith("com.apple.") || id.startsWith("dev.rneye.")) continue;
+    apps.add(id);
+  }
+  return apps.size === 1 ? [...apps][0] : undefined;
 }
 
 // `RNERunner 812 me 9u IPv4 0x… 0t0 TCP 127.0.0.1:22087 (LISTEN)`
@@ -129,8 +162,10 @@ export async function findLiveIosRunner(
   bundleId: string,
   version: string,
   deps: IosRunnerDeps,
+  /** `launchctl list` already read by the caller; read here when absent. */
+  launchctl?: string,
 ): Promise<RunnerHandle | undefined> {
-  const pid = await runnerPid(udid, bundleId, deps);
+  const pid = launchctl !== undefined ? parseAppPid(launchctl, bundleId) : await runnerPid(udid, bundleId, deps);
   if (pid === undefined) return undefined;
   let lsof: string;
   try {
@@ -215,7 +250,8 @@ async function refocus(udid: string, app: string | undefined, d: IosRunnerDeps):
  * reuse a live one → install if needed → `simctl launch` (20s) → `xcodebuild
  * test-without-building` fallback (60s) → DriverError naming both attempts.
  * The simctl-launched runner outlives this process on purpose; the xcodebuild
- * one is a child of it and dies with the handle's stop().
+ * one is a child of it and dies with the handle's stop(). Whenever it launched
+ * the runner — started or not — the foreground goes back to the app under test.
  */
 export async function startIosRunner(
   udid: string,
@@ -235,12 +271,39 @@ export async function startIosRunner(
   }
   const bundle = art.runnerBundleId;
 
-  const live = await findLiveIosRunner(udid, bundle, art.version, d);
+  const services = await launchctlList(udid, d);
+  const live = await findLiveIosRunner(udid, bundle, art.version, d, services);
   if (live) return live;
 
   if (signal?.aborted) throw aborted();
   await installIfNeeded(udid, art, d);
   if (signal?.aborted) throw aborted();
+
+  // Read before the runner takes the front, so it is the app that had it.
+  const foreground = opts.foreground ?? soleRunningApp(services, bundle);
+  try {
+    return await launchRunner(udid, art, d, opts, foreground);
+  } catch (e) {
+    // The runner was in front and is gone again (terminated, or its
+    // xcodebuild stopped): SpringBoard is left there, with the app under test
+    // suspended, unless it is handed back — and the pool retries every 5 min.
+    await refocus(udid, foreground, d);
+    throw e;
+  }
+}
+
+/** Steps 3 and 4 of startIosRunner; `foreground` is handed the front back on success. */
+async function launchRunner(
+  udid: string,
+  art: IosArtifact,
+  d: IosRunnerDeps,
+  opts: StartOptions,
+  foreground: string | undefined,
+): Promise<RunnerHandle> {
+  const { signal } = opts;
+  const aborted = () =>
+    new DriverError(`iOS runner start on ${udid} aborted: the session is shutting down.`);
+  const bundle = art.runnerBundleId;
 
   // Step 3: simctl launch. It returns once the app is launched and prints
   // "<bundle>: <pid>"; the runner then needs a few seconds to bind its port.
@@ -255,8 +318,8 @@ export async function startIosRunner(
     const m = /:\s*(\d+)\s*$/.exec(stdout.trim());
     pid = m ? Number(m[1]) : undefined;
     if ((await pollStatus(port, art.version, SIMCTL_WAIT_MS, d, undefined, signal)) === "ok") {
-      await refocus(udid, opts.foreground, d);
-      return { port, pid, via: "simctl", stop: killRunner(udid, bundle, d) };
+      await refocus(udid, foreground, d);
+      return { port, pid, via: "simctl", foreground, stop: killRunner(udid, bundle, d) };
     }
     simctlOutcome = `no answer on port ${port} within ${SIMCTL_WAIT_MS / 1000}s`;
   } catch (e) {
@@ -281,6 +344,7 @@ export async function startIosRunner(
   const handle: RunnerHandle = {
     port: port2,
     via: "xcodebuild",
+    foreground,
     stop: async (killAfterMs?: number) => {
       await h.stop("SIGINT", killAfterMs).catch(() => {});
     },
@@ -288,7 +352,7 @@ export async function startIosRunner(
   opts.onSpawn?.(handle);
   const r = await pollStatus(port2, art.version, XCODEBUILD_WAIT_MS, d, () => h.exited(), signal);
   if (r === "ok") {
-    await refocus(udid, opts.foreground, d);
+    await refocus(udid, foreground, d);
     return handle;
   }
   const tail = stderrTail(h);

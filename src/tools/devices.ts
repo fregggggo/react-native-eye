@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { existsSync } from "node:fs";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { getRegistry, NEW_RUNTIME_READY_TIMEOUT_MS, type RuntimeSetupOutcome } from "../core/registry.js";
+import { getRegistry, NEW_RUNTIME_READY_TIMEOUT_MS, type Connection, type RuntimeSetupOutcome } from "../core/registry.js";
 import { deviceContext } from "./context.js";
 import { IosDriver } from "../drivers/ios.js";
 import { AndroidDriver } from "../drivers/android.js";
@@ -23,6 +23,50 @@ function assertUrl(url: string): void {
 }
 
 const APP_READY_TIMEOUT_MS = 4000;
+
+const DEVICE_PARAM = "Device udid/serial or name (substring). Default: the connected app's device, else the only booted one.";
+
+/**
+ * How long launch_app waits, after restarting the app this session is
+ * connected to, for its JS runtime to attach again. A dev build's cold start
+ * loads the whole bundle from Metro: seconds on a simulator, ~10 s on a loaded
+ * emulator (see RELOAD_NEW_RUNTIME_WAIT_MS).
+ */
+const RELAUNCH_ATTACH_WAIT_MS = 15000;
+const RELAUNCH_POLL_MS = 250;
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * After `launch_app {terminate_running}` on the connected app: waits for the
+ * restarted app's runtime to be attached again, through the registry's own
+ * re-attach (ensure()). Answering "Launched" at once sent the next call into
+ * the gap, where it failed with "connection lost" while the app was loading.
+ */
+async function reattachAfterRelaunch(old: Connection, waitMs: number): Promise<string> {
+  const registry = getRegistry();
+  const started = Date.now();
+  const deadline = started + waitMs;
+  while (Date.now() < deadline) {
+    await sleep(RELAUNCH_POLL_MS);
+    // Until the old socket has closed, ensure() hands back the dying connection.
+    if (old.connected) continue;
+    const left = Math.max(0, deadline - Date.now());
+    const c = await Promise.race([registry.ensure().catch(() => undefined), sleep(left).then(() => undefined)]);
+    if (c?.connected && c !== old) {
+      const other = c.meta.appId && old.meta.appId && c.meta.appId !== old.meta.appId ? ` — to ${c.meta.appId}, not ${old.meta.appId}` : "";
+      return `Its JS runtime is attached again after ${secs(Date.now() - started)}s${other}.`;
+    }
+  }
+  const waited = secs(Date.now() - started);
+  if (old.connected) {
+    return `The connection to the previous instance is still open after ${waited}s — the app may not have restarted; check with observe.`;
+  }
+  return (
+    `Its JS runtime has not attached again after ${waited}s — the app is still starting (probably loading its bundle). ` +
+    `Tools that need the runtime re-attach on their own once it is up.`
+  );
+}
 
 /**
  * Mirrors the wording connect() uses (src/tools/connection.ts) for the same
@@ -135,6 +179,8 @@ export function registerDeviceTools(
     /** Test knobs for reload_app's two waits (RELOAD_WAIT_MS, RELOAD_NEW_RUNTIME_WAIT_MS). */
     reloadWaitMs?: number;
     reloadNewRuntimeWaitMs?: number;
+    /** Test knob for launch_app's re-attach wait (RELAUNCH_ATTACH_WAIT_MS). */
+    relaunchWaitMs?: number;
   },
 ): void {
   const drivers = () => opts?.drivers ?? [new IosDriver(), new AndroidDriver()];
@@ -145,6 +191,7 @@ export function registerDeviceTools(
       title: "List devices",
       description: "List available iOS simulators and Android devices (booted ones are marked).",
       inputSchema: {},
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async () => {
       try {
@@ -162,19 +209,30 @@ export function registerDeviceTools(
     {
       title: "Launch app",
       description:
-        "Launch an app by bundle id (iOS) / package name (Android) on the active device. Optional: terminate_running to restart a running app, env to pass launch environment variables (iOS only).",
+        "Launch an app by bundle id (iOS) / package name (Android) on the active device. Optional: terminate_running to restart a running app, env to pass launch environment variables (iOS only). Restarting the connected app waits up to 15 s for its JS runtime to attach again.",
       inputSchema: {
-        app_id: z.string(),
-        terminate_running: z.boolean().optional(),
-        env: z.record(z.string()).optional(),
-        device: z.string().optional(),
+        app_id: z.string().describe("Bundle id (iOS) or package name (Android)."),
+        terminate_running: z.boolean().optional().describe("Restart the app if it is already running (default false)."),
+        env: z.record(z.string()).optional().describe("Launch environment variables (iOS only)."),
+        device: z.string().optional().describe(DEVICE_PARAM),
       },
+      // Not additive: terminate_running kills the running app.
+      annotations: { readOnlyHint: false, openWorldHint: false },
     },
     async ({ app_id, terminate_running, env, device }) => {
       try {
-        const { driver, udid } = await deviceContext({ ...opts, device });
+        const { driver, udid, conn, lost } = await deviceContext({ ...opts, device });
+        // The app this session debugs is about to be restarted: its runtime
+        // goes away with it. Without an appId from Metro there is no telling.
+        // Same wait when its connection already dropped (the app crashed or was
+        // killed): launching it again is how it comes back, and the next call
+        // otherwise lands while the bundle is still loading.
+        const restarting =
+          (terminate_running && conn?.connected && conn.meta.appId === app_id ? conn : undefined) ??
+          (!conn && lost?.conn.meta.appId === app_id ? lost.conn : undefined);
         await driver.launchApp(udid, app_id, { terminateRunning: terminate_running, env });
-        return text(`Launched ${app_id}.`);
+        if (!restarting) return text(`Launched ${app_id}.`);
+        return text(`Launched ${app_id}. ${await reattachAfterRelaunch(restarting, opts?.relaunchWaitMs ?? RELAUNCH_ATTACH_WAIT_MS)}`);
       } catch (err) {
         return toToolError(err);
       }
@@ -186,7 +244,12 @@ export function registerDeviceTools(
     {
       title: "Install app",
       description: "Install an app bundle on the active device (.app/.ipa on iOS, .apk on Android).",
-      inputSchema: { app_path: z.string(), device: z.string().optional() },
+      inputSchema: {
+        app_path: z.string().describe("Path to the .app/.ipa (iOS) or .apk (Android)."),
+        device: z.string().optional().describe(DEVICE_PARAM),
+      },
+      // Replaces an installed build of the same app.
+      annotations: { readOnlyHint: false, openWorldHint: false },
     },
     async ({ app_path, device }) => {
       try {
@@ -206,6 +269,7 @@ export function registerDeviceTools(
       title: "Open Simulator",
       description: "Open the iOS Simulator app (macOS only).",
       inputSchema: {},
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async () => {
       try {
@@ -224,7 +288,11 @@ export function registerDeviceTools(
       title: "Open URL",
       description:
         "Open a deeplink or universal link on the active device (myapp://screen, https://…). Touch-free: it delivers no touch event, so it is unaffected by slow touch delivery and is usually the cheapest way to reach a screen.",
-      inputSchema: { url: z.string(), device: z.string().optional() },
+      inputSchema: {
+        url: z.string().describe("URL with a scheme: myapp://path or https://…"),
+        device: z.string().optional().describe(DEVICE_PARAM),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     },
     async ({ url, device }) => {
       try {
@@ -246,11 +314,14 @@ export function registerDeviceTools(
       description:
         "Grant, revoke or reset one privacy permission for an app, so the system alert never appears. iOS services: camera, photos, photos-add, location, location-always, contacts, contacts-limited, microphone, motion, calendar, reminders, media-library, siri, all. Android services: camera, microphone, photos, location, contacts, notifications. app_id defaults to the connected app.",
       inputSchema: {
-        service: z.string(),
-        status: z.enum(["grant", "revoke", "reset"]),
-        app_id: z.string().optional(),
-        device: z.string().optional(),
+        service: z.string().describe("Permission service name, e.g. camera, photos, location (full lists above)."),
+        status: z
+          .enum(["grant", "revoke", "reset"])
+          .describe("grant, revoke, or reset. On Android, reset resets runtime permissions of every app on the device."),
+        app_id: z.string().optional().describe("Bundle id (iOS) / package name (Android). Default: the connected app."),
+        device: z.string().optional().describe(DEVICE_PARAM),
       },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },
     async ({ service, status, app_id, device }) => {
       try {
@@ -288,6 +359,8 @@ export function registerDeviceTools(
       description:
         "Reload the JS bundle and wait for the new runtime (captures cold-start logs/network on the next run).",
       inputSchema: {},
+      // Not additive: the app's JS state is discarded.
+      annotations: { readOnlyHint: false, openWorldHint: false },
     },
     async () => {
       try {

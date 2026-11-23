@@ -51,9 +51,18 @@ describe("isAsciiSafeLayout", () => {
     expect(isAsciiSafeLayout("com.apple.keylayout.US")).toBe(true);
   });
 
-  it("accepts the ABC variants", () => {
+  it("accepts ABC", () => {
     expect(isAsciiSafeLayout("com.apple.keylayout.ABC")).toBe(true);
-    expect(isAsciiSafeLayout("com.apple.keylayout.ABC-AZERTY")).toBe(true);
+  });
+
+  // Review #8: these keep Latin letters on the keys but not at US positions —
+  // "yes" typed under QWERTZ arrives as "zes".
+  it("refuses QWERTZ, AZERTY and the dead-key International layouts", () => {
+    expect(isAsciiSafeLayout("com.apple.keylayout.ABC-QWERTZ")).toBe(false);
+    expect(isAsciiSafeLayout("com.apple.keylayout.ABC-AZERTY")).toBe(false);
+    expect(isAsciiSafeLayout("com.apple.keylayout.USInternational-PC")).toBe(false);
+    expect(isAsciiSafeLayout("com.apple.keylayout.US-International")).toBe(false);
+    expect(isAsciiSafeLayout("com.apple.keylayout.ABC-India")).toBe(false);
   });
 
   it("refuses a non-Latin layout (Greek)", () => {

@@ -90,7 +90,12 @@ export async function nativeDriverLine(
   };
 
   // Already ready in this process: nothing to start.
-  if (pool.view(platform, udid)?.state === "ready") return `native driver: ready${tag("reused")}`;
+  if (pool.view(platform, udid)?.state === "ready") {
+    // A runner started before connect (observe with no app known) left
+    // SpringBoard in front: warm() on a ready entry hands the foreground back.
+    void pool.warm(platform, udid, { foreground: target.appId });
+    return `native driver: ready${tag("reused")}`;
+  }
 
   // Not awaited beyond the peek: warm() keeps going in the background.
   const started = pool.warm(platform, udid, { foreground: target.appId }).then(
@@ -173,10 +178,14 @@ export function registerConnectionTools(server: McpServer, opts: ConnectionToolO
       description:
         "Connect to a running React Native app via Metro. Optionally pass a port, a target_id from list_targets, or a device name — otherwise standard ports are scanned and the app's JS runtime is picked.",
       inputSchema: {
-        port: z.number().int().positive().optional(),
-        target_id: z.string().optional(),
-        device: z.string().optional(),
+        port: z.number().int().positive().optional().describe("Metro port. Omit to scan the standard ports (8081-8083, 19000-19002)."),
+        target_id: z.string().optional().describe("A target id from list_targets, to pick one runtime when there are several."),
+        device: z
+          .string()
+          .optional()
+          .describe("Device name as Metro reports it (an exact name wins over a partial one), or a simulator UDID / adb serial."),
       },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ port, target_id, device }) => {
       try {
@@ -223,6 +232,7 @@ export function registerConnectionTools(server: McpServer, opts: ConnectionToolO
       description:
         "List every debuggable React Native target Metro exposes (a device can have several: the JS runtime, the UI page, stale pages from earlier reloads). Pass a target_id to connect.",
       inputSchema: {},
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     },
     async () => {
       try {

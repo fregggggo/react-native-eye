@@ -22,6 +22,17 @@ export function messageOf(err: unknown): string {
 }
 
 /**
+ * How many timed-out calls a runner that still answers /status is excused per
+ * SLOW_WINDOW_MS before it counts as hung after all. /status takes no route
+ * lock on either platform, so it answers while a route is merely busy — and
+ * also while one is stuck for good, which this bound is for.
+ */
+const SLOW_LIMIT = 3;
+const SLOW_WINDOW_MS = 60_000;
+/** Excused timeouts per runner generation (a backend object is one generation). */
+const slowTimeouts = new WeakMap<NativeBackend, number[]>();
+
+/**
  * The fallback table of spec "Error handling and fallback", shared by the iOS
  * and Android drivers. `label` names the on-device side in errors ("iOS
  * runner", "Android server"); `fallbackPath` is the OS path used instead.
@@ -111,9 +122,32 @@ export class NativePath {
     }
   }
 
+  /**
+   * A call timed out, but the runner still answers /status: it is busy, not
+   * gone — a hierarchy dump on a screen playing video took 27 s (field test
+   * 3). Writing it off counted towards the flap rule, so two slow reads in a
+   * minute switched the native driver off for 5 minutes and force-stopped a
+   * healthy Android server, leaving `uiautomator dump` — which fails on the
+   * same animated screen — as the only layout. Excused SLOW_LIMIT times per
+   * runner per minute; past that it is treated as hung.
+   */
+  private async slowNotDead(backend: NativeBackend, err: unknown): Promise<boolean> {
+    if (!(err instanceof NativeCallError) || err.kind !== "lost" || err.code !== "timeout") return false;
+    const now = Date.now();
+    const recent = (slowTimeouts.get(backend) ?? []).filter((t) => now - t < SLOW_WINDOW_MS);
+    if (recent.length >= SLOW_LIMIT) return false;
+    const alive = await backend.status().then(
+      () => true,
+      () => false,
+    );
+    if (alive) slowTimeouts.set(backend, [...recent, now]);
+    return alive;
+  }
+
   /** A read failed on the runner: never throws, always falls back, says why. */
-  readFailure(id: string, backend: NativeBackend, err: unknown): string {
+  async readFailure(id: string, backend: NativeBackend, err: unknown): Promise<string> {
     if (!(err instanceof NativeCallError)) return `runner error: ${messageOf(err)}`;
+    if (await this.slowNotDead(backend, err)) return `runner slow: ${err.message}`;
     switch (err.kind) {
       case "refused":
       case "lost":
@@ -141,6 +175,12 @@ export class NativePath {
         await viaRunner(backend);
         return { path: "runner" };
       } catch (err) {
+        if (await this.slowNotDead(backend, err)) {
+          // Delivery unknown, as for any timeout — but the runner stays.
+          throw new DriverError(
+            `${this.label} did not finish the ${op} in time (${messageOf(err)}) but is still running — the gesture may still be delivered — check the screen before retrying.`,
+          );
+        }
         why = this.gestureFailure(id, backend, op, err);
       }
     }

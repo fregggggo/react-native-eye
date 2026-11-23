@@ -62,9 +62,23 @@ export async function activeDriver(overrides?: DriverOpts): Promise<ResolvedDevi
 
   if (overrides?.device) {
     const needle = overrides.device.toLowerCase();
-    const matches = all.filter(
+    let matches = all.filter(
       (e) => e.device.udid.toLowerCase() === needle || e.device.name.toLowerCase().includes(needle),
     );
+    // A substring is narrowed before it is called ambiguous: "iPhone 16" also
+    // matches "iPhone 16 Pro"/"Plus"/"e", and simctl lists one name once per
+    // runtime, so the plainest name could never be picked without a udid. An
+    // exact name wins over containment, then a booted device over shut-down
+    // ones of that name.
+    if (matches.length > 1) {
+      const n = normalizeDeviceName(overrides.device);
+      const exact = matches.filter((e) => normalizeDeviceName(e.device.name) === n);
+      if (exact.length > 0) matches = exact;
+    }
+    if (matches.length > 1) {
+      const live = matches.filter((e) => e.device.booted);
+      if (live.length > 0) matches = live;
+    }
     if (matches.length === 0) {
       throw new UserInputError(
         `No device matching "${overrides.device}". Available: ${all.map((e) => label(e.device)).join("; ") || "none"}.`,

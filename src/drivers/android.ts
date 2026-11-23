@@ -2,12 +2,13 @@ import { writeFile, rm } from "node:fs/promises";
 import { run as defaultRun, spawnLongRunning, TIMEOUTS, type LongRunningHandle } from "../core/exec.js";
 import { parseUiautomator } from "../layout/parseUiautomator.js";
 import { DriverError, UserInputError } from "../core/errors.js";
-import { AdbShell } from "./adbShell.js";
+import { AdbShell, commandNotSent } from "./adbShell.js";
 import { sharedPool } from "../native/pool.js";
 import { AndroidServerBackend } from "../native/androidBackend.js";
 import { NativeCallError } from "../native/httpClient.js";
 import type { NativeBackend } from "../native/nativeBackend.js";
 import { NativePath, type RunnerPool } from "./nativePath.js";
+import { recorderExited, recorderStarted } from "./recorder.js";
 import { parseTopThreads } from "../perf/parseTop.js";
 import { parseGfxinfo } from "../perf/parseGfxinfo.js";
 import { appWindowState, WINDOW_DUMP_CMD } from "./androidWindow.js";
@@ -70,6 +71,13 @@ const ANDROID_PERMISSIONS: Record<string, string> = {
 export const ANDROID_CPU_NOTE =
   "Android reports per-thread %CPU only — no native stack frames. For JS-level frames, profile Hermes from the debugger.";
 
+/** How long record_video watches a fresh screenrecord for an immediate exit. */
+const RECORD_START_WAIT_MS = 1_500;
+/** How long stop_recording waits for screenrecord to write the mp4 out and exit after SIGINT. */
+const RECORD_FINALIZE_WAIT_MS = 5_000;
+
+const messageOfError = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
 const densityCache = new Map<string, number>();
 const sharedShells = new Map<string, AdbShell>();
 function defaultShellFor(serial: string): ShellLike {
@@ -116,11 +124,17 @@ export class AndroidDriver implements DeviceDriver {
     try {
       await this.shellFor(udid).exec(cmd, { timeoutMs });
     } catch (err) {
-      // Retry through a one-shot adb only when the persistent shell itself broke.
-      // A non-zero exit from `input` is a real failure and must be reported, not
-      // retried into a double tap / double-typed text.
+      // Retry through a one-shot adb only when the command never reached the
+      // persistent shell. A non-zero exit from `input` is a real failure, and a
+      // shell that died or timed out after the write may have run it already:
+      // retrying either tapped twice or typed the text twice.
       const msg = err instanceof Error ? err.message : String(err);
-      if (!/died|write failed|timed out/i.test(msg)) throw err;
+      if (!commandNotSent(err)) {
+        if (!/died|timed out/i.test(msg)) throw err;
+        throw new DriverError(
+          `${msg} — the command may have run before the shell broke; check the screen before retrying.`,
+        );
+      }
       try {
         await this.runner("adb", ["-s", udid, "shell", cmd], { timeoutMs });
       } catch (fallbackErr) {
@@ -138,7 +152,10 @@ export class AndroidDriver implements DeviceDriver {
       .split("\n")
       .slice(1)
       .map((line) => line.trim())
-      .filter((line) => line && line.includes("device"))
+      // The second column is the state; only "device" is usable. A substring
+      // test let "unauthorized usb:… product:… device:…" and "offline …
+      // device:…" (adb -l prints a device: key on every row) through.
+      .filter((line) => line.split(/\s+/)[1] === "device")
       .map((line) => {
         const udid = line.split(/\s+/)[0];
         const modelMatch = line.match(/model:(\S+)/);
@@ -154,7 +171,7 @@ export class AndroidDriver implements DeviceDriver {
       try {
         return await backend.screenshot();
       } catch (err) {
-        this.native.readFailure(udid, backend, err);
+        await this.native.readFailure(udid, backend, err);
       }
     }
     const { stdoutBuffer } = await this.runner("adb", ["-s", udid, "exec-out", "screencap", "-p"], {
@@ -255,12 +272,15 @@ export class AndroidDriver implements DeviceDriver {
       }
       return { els: parseUiautomator(xml), os: { path: "runner" } };
     } catch (err) {
-      const why = this.native.readFailure(udid, backend, err);
+      const why = await this.native.readFailure(udid, backend, err);
       if (err instanceof NativeCallError && err.kind === "refused") return { why };
-      const alive = await backend.status().then(
-        () => true,
-        () => false,
-      );
+      // A slow read has just been told apart by /status answering.
+      const alive =
+        why.startsWith("runner slow") ||
+        (await backend.status().then(
+          () => true,
+          () => false,
+        ));
       if (!alive) return { why };
       throw new DriverError(
         `The Android server could not read the view hierarchy (${why}), and it is still running, so ` +
@@ -352,7 +372,10 @@ export class AndroidDriver implements DeviceDriver {
           ` Set the value directly with eval_js${why ? ", or retry once connect reports the native driver ready" : ""}.`,
       );
     }
-    await this.input(udid, ["text", text], "key");
+    // `input text` turns "%s" into a space — its one escape, for typing
+    // spaces on old devices — so a literal "%s" arrived as " ". Splitting
+    // between the % and the s sends it as typed.
+    for (const chunk of text.split(/(?<=%)(?=s)/)) await this.input(udid, ["text", chunk], "key");
   }
 
   async pressKey(udid: string, key: "back" | "home"): Promise<OsPath> {
@@ -511,11 +534,22 @@ export class AndroidDriver implements DeviceDriver {
    * adb arguments: adb rejoins them and sh still sees the `;`.
    */
   async openUrl(udid: string, url: string): Promise<void> {
-    await this.runner(
+    const { stdout } = await this.runner(
       "adb",
       ["-s", udid, "shell", `am start -a android.intent.action.VIEW -d ${shellQuote(url)}`],
       { timeoutMs: TIMEOUTS.key },
     );
+    // As in launchApp: `am start` prints its failure and still exits 0 — a URL
+    // no app handles was reported as opened. "Warning: Activity not started,
+    // intent has been delivered to currently running top-most instance" is a
+    // success (the app got it through onNewIntent).
+    const failure = /^Error:.*$/m.exec(stdout);
+    if (failure) {
+      throw new DriverError(
+        `Could not open ${url} on ${udid}: ${failure[0]}`,
+        "No installed app handles this URL: check the scheme/host against the app's intent filters, and that the app is installed.",
+      );
+    }
   }
 
   async setPermission(
@@ -592,18 +626,46 @@ export class AndroidDriver implements DeviceDriver {
   async recordStart(udid: string, localPath: string): Promise<RecordingHandle> {
     const devicePath = "/sdcard/rne-recording.mp4";
     const h = this.spawner("adb", ["-s", udid, "shell", "screenrecord", devicePath]);
-    await h.assertAlive();
+    // screenrecord prints nothing when it starts; one that cannot (no encoder,
+    // a display it cannot capture) exits within this window, after the
+    // 400 ms assertAlive used to accept it.
+    await recorderStarted(h, RECORD_START_WAIT_MS);
     return {
+      running: () => !h.exited(),
       finalize: async () => {
-        await this.runner("adb", ["-s", udid, "shell", "pkill", "-2", "screenrecord"], {
-          timeoutMs: TIMEOUTS.list,
-        }).catch(() => {});
-        await h.stop("SIGINT").catch(() => {});
+        // Exited before stop_recording: the 3-minute cap (exit 0, a complete
+        // file) or a failure (non-zero: stop() throws its code and stderr).
+        let early: unknown;
+        if (h.exited()) {
+          await h.stop().catch((e: unknown) => (early = e));
+        } else {
+          await this.runner("adb", ["-s", udid, "shell", "pkill", "-2", "screenrecord"], {
+            timeoutMs: TIMEOUTS.list,
+          }).catch(() => {});
+          // screenrecord writes the mp4 out on SIGINT and exits, and the local
+          // adb with it; signalling the local adb first can cut that short.
+          await recorderExited(h, RECORD_FINALIZE_WAIT_MS);
+          await h.stop("SIGINT").catch(() => {});
+        }
         await new Promise((r) => setTimeout(r, 500)); // let the device finalize the mp4
-        await this.runner("adb", ["-s", udid, "pull", devicePath, localPath], { timeoutMs: TIMEOUTS.install });
+        try {
+          await this.runner("adb", ["-s", udid, "pull", devicePath, localPath], { timeoutMs: TIMEOUTS.install });
+        } catch (err) {
+          const why = err instanceof Error ? err.message : String(err);
+          throw new DriverError(
+            `Could not pull the recording from ${udid}: ${why}` +
+              (early ? ` (screenrecord had already stopped on its own: ${messageOfError(early)})` : "") +
+              `. If it was written, it is still on the device: adb -s ${udid} pull ${devicePath} ${localPath}`,
+          );
+        }
         await this.runner("adb", ["-s", udid, "shell", "rm", devicePath], { timeoutMs: TIMEOUTS.list }).catch(
           () => {},
         );
+        if (early) {
+          throw new DriverError(
+            `screenrecord stopped on its own before stop_recording (${messageOfError(early)}); what it recorded was pulled to ${localPath}.`,
+          );
+        }
       },
     };
   }

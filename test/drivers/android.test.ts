@@ -14,9 +14,11 @@ function fakeRunner(responses: Record<string, string>) {
   return { runner, calls };
 }
 
+// The persistent shell could not take the command at all (adb not started,
+// write refused): nothing reached the device, so the one-shot retry is safe.
 const noShell = () => ({
   exec: async (): Promise<string> => {
-    throw new Error("adb shell died");
+    throw Object.assign(new Error("adb shell `input` write failed: EPIPE"), { notSent: true });
   },
 });
 
@@ -27,6 +29,22 @@ describe("AndroidDriver", () => {
     const driver = new AndroidDriver(runner as any);
     const devices = await driver.listDevices();
     expect(devices[0]).toMatchObject({ platform: "android", udid: "emulator-5554", booted: true });
+  });
+
+  // Review #12: `adb devices -l` prints a device: key on every row, so a
+  // substring test let unauthorized and offline devices through.
+  it("lists only rows whose state is exactly `device`", async () => {
+    const out = [
+      "List of devices attached",
+      "emulator-5554          device product:sdk_gphone64_arm64 model:sdk_gphone64_arm64 device:emu64a transport_id:1",
+      "R58N123ABC             unauthorized usb:1-1 product:a52qnsxx model:SM_A525F device:a52q transport_id:2",
+      "emulator-5556          offline product:sdk_gphone64_arm64 model:Pixel_7 device:emu64a transport_id:3",
+      "",
+    ].join("\n");
+    const { runner } = fakeRunner({ "devices -l": out });
+    const devices = await new AndroidDriver(runner as any).listDevices();
+    expect(devices.map((d) => d.udid)).toEqual(["emulator-5554"]);
+    expect(devices[0].name).toBe("sdk_gphone64_arm64");
   });
 
   it("parses uiautomator layout", async () => {
@@ -207,19 +225,74 @@ describe("AndroidDriver", () => {
   });
 
   it("records via screenrecord, then pkills, pulls, and removes the device file", async () => {
-    const { runner, calls } = fakeRunner({});
+    const { runner: base, calls } = fakeRunner({});
+    // screenrecord (and the local adb with it) exits once pkill's SIGINT lands.
+    let exited = false;
+    const runner = async (cmd: string, args: string[]) => {
+      if (args.includes("pkill")) exited = true;
+      return base(cmd, args);
+    };
     const spawned: string[] = [];
+    let signalled = false;
     const spawner = (cmd: string, args: string[]) => {
       spawned.push(`${cmd} ${args.join(" ")}`);
-      return { exited: () => false, stderr: () => "", assertAlive: async () => {}, stop: async () => {} };
+      return {
+        exited: () => exited,
+        stderr: () => "",
+        assertAlive: async () => {},
+        stop: async () => {
+          signalled = !exited;
+        },
+      };
     };
     const driver = new AndroidDriver(runner as any, spawner as any);
     const h = await driver.recordStart("SER", "/tmp/out.mp4");
     expect(spawned[0]).toContain("shell screenrecord");
     await h.finalize();
     expect(calls.some((c) => c.includes("pkill -2 screenrecord"))).toBe(true);
+    // The local adb was left to exit with screenrecord, not signalled mid-write.
+    expect(signalled).toBe(false);
     expect(calls.some((c) => c.includes("pull") && c.includes("/tmp/out.mp4"))).toBe(true);
     expect(calls.some((c) => c.includes("shell rm"))).toBe(true);
+  });
+
+  it("refuses a screenrecord that exits during the start window, with its stderr", async () => {
+    const { runner } = fakeRunner({});
+    const t0 = Date.now();
+    const spawner = () => ({
+      exited: () => Date.now() - t0 > 600,
+      stderr: () => "ERROR: unable to create video encoder",
+      assertAlive: async () => {
+        throw new Error("adb exited immediately (code 1): ERROR: unable to create video encoder");
+      },
+      stop: async () => {},
+    });
+    const driver = new AndroidDriver(runner as any, spawner as any);
+    await expect(driver.recordStart("SER", "/tmp/out.mp4")).rejects.toThrow(/unable to create video encoder/);
+  });
+
+  it("a pull failure after screenrecord died on its own names both, and the recorder counts as gone", async () => {
+    const runner = async (_cmd: string, args: string[]) => {
+      if (args.includes("pull")) throw new Error("adb: error: failed to stat remote object '/sdcard/rne-recording.mp4'");
+      return { stdout: "", stdoutBuffer: Buffer.from(""), stderr: "" };
+    };
+    let exited = false;
+    const spawner = () => ({
+      exited: () => exited,
+      stderr: () => "",
+      assertAlive: async () => {},
+      stop: async () => {
+        if (exited) throw new Error("adb exited early (code 1): Encoder failed (err=-38)");
+      },
+    });
+    const driver = new AndroidDriver(runner as any, spawner as any);
+    const h = await driver.recordStart("SER", "/tmp/out.mp4");
+    exited = true;
+    expect(h.running?.()).toBe(false);
+    const err = await h.finalize().then(() => undefined, (e: Error) => e);
+    expect(err?.message).toMatch(/failed to stat remote object/);
+    expect(err?.message).toMatch(/Encoder failed/);
+    expect(err?.message).toContain("adb -s SER pull /sdcard/rne-recording.mp4 /tmp/out.mp4");
   });
 });
 
@@ -265,7 +338,7 @@ describe("AndroidDriver shell safety", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("falls back to one-shot adb when the persistent shell died", async () => {
+  it("falls back to one-shot adb when the command never reached the persistent shell", async () => {
     const calls: string[] = [];
     const runner = async (cmd: string, args: string[]) => {
       calls.push(`${cmd} ${args.join(" ")}`);
@@ -276,13 +349,49 @@ describe("AndroidDriver shell safety", () => {
     expect(calls[0]).toContain("input 'tap' '5' '6'");
   });
 
+  // Review #11: the shell may have run the command before it died or timed
+  // out; a retry typed the text twice.
+  it.each([
+    ["died", "adb shell `input 'text' 'hello'` died"],
+    ["timed out", "adb shell `input 'text' 'hello'` timed out after 5000ms"],
+  ])("does not retry a command the shell %s on, and says it may have run", async (_l, msg) => {
+    const calls: string[] = [];
+    const runner = async (cmd: string, args: string[]) => {
+      calls.push(`${cmd} ${args.join(" ")}`);
+      return { stdout: "", stdoutBuffer: Buffer.from(""), stderr: "" };
+    };
+    const shell = () => ({
+      exec: async (): Promise<string> => {
+        throw new Error(msg);
+      },
+    });
+    const driver = new AndroidDriver(runner as any, undefined, shell, { get: () => undefined, view: () => undefined, markDead() {}, markFailed() {} } as any);
+    const err = await driver.typeText("SER", "hello").catch((e) => e);
+    expect(err.message).toContain(msg);
+    expect(err.message).toMatch(/may have run/);
+    expect(calls.filter((c) => c.includes("input"))).toEqual([]);
+  });
+
+  it("types a literal %s, which `input text` would turn into a space", async () => {
+    const sent: string[] = [];
+    const shell = () => ({
+      exec: async (cmd: string): Promise<string> => {
+        sent.push(cmd);
+        return "";
+      },
+    });
+    const driver = new AndroidDriver(fakeRunner({}).runner as any, undefined, shell, { get: () => undefined, view: () => undefined, markDead() {}, markFailed() {} } as any);
+    await driver.typeText("SER", "100%sure %d");
+    expect(sent).toEqual(["input 'text' '100%'", "input 'text' 'sure %d'"]);
+  });
+
   it("keeps the input command visible when the one-shot fallback also fails, instead of collapsing to a bare 'adb -s' message", async () => {
     // exec.ts's timeout message names only `${cmd} ${args[0]}` — for the
     // fallback call that is "adb -s", which loses which input command was in
     // flight. The wrapper here must not let that information disappear.
     const shell = () => ({
       exec: async () => {
-        throw new Error("adb shell `input tap 5 6` timed out after 90000ms");
+        throw Object.assign(new Error("adb shell `input tap 5 6` write failed: EPIPE"), { notSent: true });
       },
     });
     const runner = async () => {
@@ -350,6 +459,28 @@ describe("AndroidDriver touch-free routes", () => {
     const driver = new AndroidDriver(runner as any);
     await driver.openUrl("SER", "demo://profile");
     expect(calls).toContain("adb -s SER shell am start -a android.intent.action.VIEW -d 'demo://profile'");
+  });
+
+  // Review #7: `am start` prints its failure and exits 0.
+  it("fails when no app handles the url, instead of reporting it opened", async () => {
+    const { runner } = fakeRunner({
+      "am start": [
+        "Starting: Intent { act=android.intent.action.VIEW dat=nope://x }",
+        "Error: Activity not started, unable to resolve Intent { act=android.intent.action.VIEW dat=nope://x flg=0x10000000 }",
+      ].join("\n"),
+    });
+    const err = await new AndroidDriver(runner as any).openUrl("SER", "nope://x").catch((e) => e);
+    expect(err?.message).toContain("Could not open nope://x on SER: Error: Activity not started, unable to resolve Intent");
+  });
+
+  it("an intent delivered to the running top-most instance counts as opened", async () => {
+    const { runner } = fakeRunner({
+      "am start": [
+        "Starting: Intent { act=android.intent.action.VIEW dat=demo://profile }",
+        "Warning: Activity not started, intent has been delivered to currently running top-most instance.",
+      ].join("\n"),
+    });
+    await expect(new AndroidDriver(runner as any).openUrl("SER", "demo://profile")).resolves.toBeUndefined();
   });
 
   it("shell-quotes a url so a ';' cannot become a second command on the device", async () => {

@@ -6,6 +6,7 @@ import { parseXcRunner, xcRunnerViewport } from "../layout/parseXcRunner.js";
 import { sharedPool } from "../native/pool.js";
 import { activeKeyboardLayout, isAsciiSafeLayout } from "./hostKeyboard.js";
 import { NativePath, type RunnerPool } from "./nativePath.js";
+import { recorderStarted } from "./recorder.js";
 import { parseSample, parseAppPid } from "../perf/parseSample.js";
 import type { CpuSample, DeviceDriver, DeviceId, OsPath, RawElement, RecordingHandle, Viewport } from "./types.js";
 
@@ -19,6 +20,15 @@ type SimProfile = { scale: number; w: number; h: number }; // w/h in pixels
 // the sampling window closes — a 1s sample of a 700MB RN app took 4.3s end to
 // end — so the budget is the window plus a flat allowance, not a multiple of it.
 const SAMPLE_SYMBOLICATION_MS = 60_000;
+
+/**
+ * `simctl io recordVideo` writes "Recording started" to stderr once the first
+ * frame is processed (its own help text says to look for it); a recording that
+ * cannot start fails within about a second. The wait ends at whichever comes
+ * first, so a healthy start costs no more than simctl itself takes.
+ */
+const RECORD_START_WAIT_MS = 5_000;
+const RECORDING_STARTED_RE = /Recording started/;
 
 // A simulator's screen scale is not in any simctl output; it lives in the
 // device-type profile plist. Three cheap commands, memoised per udid because
@@ -86,13 +96,16 @@ export class IosDriver implements DeviceDriver {
 
   async screenshotPng(udid: string): Promise<Buffer> {
     // Which path produced a screenshot is not reported anywhere, so a runner
-    // failure falls back silently; the pool still learns about it.
-    const { backend } = this.native.backendFor(udid);
+    // failure falls back silently; the pool still learns about it. A start in
+    // flight is waited for, as rawLayout does: the runner launches in front of
+    // the app, so a simctl screenshot taken meanwhile showed the runner (or
+    // the home screen) instead of the app.
+    const { backend } = await this.native.backendForOs(udid);
     if (backend) {
       try {
         return await backend.screenshot();
       } catch (err) {
-        this.native.readFailure(udid, backend, err);
+        await this.native.readFailure(udid, backend, err);
       }
     }
     const { stdoutBuffer } = await this.runner(
@@ -132,7 +145,7 @@ export class IosDriver implements DeviceDriver {
         }
         why = "runner hierarchy empty";
       } catch (err) {
-        why = this.native.readFailure(udid, backend, err);
+        why = await this.native.readFailure(udid, backend, err);
       }
     }
     const els = await this.axeLayout(udid);
@@ -379,7 +392,9 @@ export class IosDriver implements DeviceDriver {
         "Launch it with launch_app, bring it to the foreground, then retry.",
       );
     }
-    const { stdout } = await this.runner("sample", [String(pid), String(durationS)], {
+    // Without -file, `sample` also leaves /tmp/<process>_<date>.sample.txt
+    // behind — up to a few MB per call, never cleaned up. To stdout only.
+    const { stdout } = await this.runner("sample", [String(pid), String(durationS), "-file", "/dev/stdout"], {
       timeoutMs: durationS * 1000 + SAMPLE_SYMBOLICATION_MS,
       hint: "`sample` symbolicates the whole call graph after the sampling window, which takes several seconds more.",
     });
@@ -390,8 +405,11 @@ export class IosDriver implements DeviceDriver {
     const h = this.spawner("xcrun", [
       "simctl", "io", udid, "recordVideo", "--codec", opts?.codec ?? "hevc", "--force", localPath,
     ]);
-    await h.assertAlive();
+    await recorderStarted(h, RECORD_START_WAIT_MS, RECORDING_STARTED_RE);
     return {
+      running: () => !h.exited(),
+      // SIGINT is what makes simctl write the movie out; stop() throws the
+      // recorder's exit code and stderr when it had already exited on its own.
       finalize: async () => {
         await h.stop("SIGINT");
       },

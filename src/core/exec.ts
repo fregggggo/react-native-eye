@@ -26,6 +26,15 @@ export const TIMEOUTS = {
   compile: 180_000,
 } as const;
 
+/**
+ * How a timed-out command names itself: "adb install", not "adb -s" — the
+ * device selector in front of the subcommand is not what ran out of time.
+ */
+export function commandLabel(cmd: string, args: string[]): string {
+  const rest = args[0] === "-s" ? args.slice(2) : args;
+  return `${cmd} ${rest.find((a) => !a.startsWith("-")) ?? ""}`.trim();
+}
+
 export function run(
   cmd: string,
   args: string[],
@@ -50,7 +59,7 @@ export function run(
           }
           const timeoutMs = opts?.timeoutMs ?? TIMEOUTS.key;
           if ((err as { killed?: boolean }).killed) {
-            const what = `${cmd} ${args[0] ?? ""}`.trim();
+            const what = commandLabel(cmd, args);
             return reject(
               new DriverError(
                 `${what} timed out after ${timeoutMs}ms (killed).${opts?.hint ? ` ${opts.hint}` : ""}`,

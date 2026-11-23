@@ -3,6 +3,7 @@ import { startIosRunner, type RunnerHandle, type StartOptions } from "./iosRunne
 import { AndroidServerBackend } from "./androidBackend.js";
 import { releaseAndroidServer, startAndroidServer, type AndroidServerHandle, type AndroidStartOptions } from "./androidServer.js";
 import type { NativeBackend } from "./nativeBackend.js";
+import { run, TIMEOUTS } from "../core/exec.js";
 
 export type PoolState = "starting" | "ready" | "dead" | "failed";
 
@@ -28,8 +29,13 @@ type Entry = {
    */
   backend?: NativeBackend;
   handle?: AnyHandle;
-  /** The app to bring back to the front after an iOS start; the last one warm() was given. */
+  /**
+   * The app to bring back to the front after an iOS start: the last one
+   * warm() was given, else the one a start found running.
+   */
   foreground?: string;
+  /** iOS: the app the start that made this entry ready handed the front to, if any. */
+  shown?: string;
   /** The one start in flight; every concurrent warm() shares it. */
   inflight?: Promise<PoolEntryView>;
 };
@@ -41,6 +47,8 @@ type PoolDeps = {
   makeAndroidBackend?: (port: number, serial: string) => NativeBackend;
   /** Force-stops a server this session holds no handle to (RNE_NATIVE_DRIVER=off). */
   releaseAndroid?: (serial: string) => Promise<void>;
+  /** Brings an iOS app to the front; a running app is not restarted (`simctl launch`). */
+  focusIos?: (udid: string, app: string) => Promise<void>;
   now?: () => number;
   env?: NodeJS.ProcessEnv;
   retryAfterMs?: number;
@@ -106,6 +114,7 @@ export class NativePool {
   private startAndroid: (serial: string, opts: AndroidStartOptions) => Promise<AndroidServerHandle>;
   private makeAndroidBackend: (port: number, serial: string) => NativeBackend;
   private releaseAndroid: (serial: string) => Promise<void>;
+  private focusIos: (udid: string, app: string) => Promise<void>;
   /** Keys whose Android server the kill switch has already released (once per process). */
   private released = new Set<string>();
   private now: () => number;
@@ -118,6 +127,11 @@ export class NativePool {
     this.startAndroid = deps.startAndroid ?? ((serial, opts) => startAndroidServer(serial, undefined, opts));
     this.makeAndroidBackend = deps.makeAndroidBackend ?? ((port, serial) => new AndroidServerBackend(port, serial));
     this.releaseAndroid = deps.releaseAndroid ?? ((serial) => releaseAndroidServer(serial));
+    this.focusIos =
+      deps.focusIos ??
+      (async (udid, app) => {
+        await run("xcrun", ["simctl", "launch", udid, app], { timeoutMs: TIMEOUTS.launch });
+      });
     this.now = deps.now ?? (() => Date.now());
     this.env = deps.env ?? process.env;
     this.retryAfterMs = deps.retryAfterMs ?? 300_000;
@@ -183,8 +197,24 @@ export class NativePool {
     if (this.closed) return Promise.resolve(this.setFailed(this.entry(key), SHUT_DOWN));
     if (this.env.RNE_NATIVE_DRIVER === "off") return this.disabled(key, platform, udid);
     const e = this.entries.get(key);
-    if (e?.inflight) return e.inflight;
-    if (e?.state === "ready") return Promise.resolve(toView(e));
+    // iOS: the runner may have been started (or left running by an earlier
+    // session) before anyone named the app — `observe` before `connect` left
+    // SpringBoard in front with the app suspended (field test, iOS 26.2). A
+    // caller that names the app gets it brought to the front; `simctl launch`
+    // does not restart a running app.
+    const app = platform === "ios" ? opts.foreground : undefined;
+    if (e?.inflight) {
+      if (app) {
+        void e.inflight
+          .then((v) => (v.state === "ready" && e.shown !== app ? this.focusIos(udid, app) : undefined))
+          .catch(() => {});
+      }
+      return e.inflight;
+    }
+    if (e?.state === "ready") {
+      if (app) void this.focusIos(udid, app).catch(() => {});
+      return Promise.resolve(toView(e));
+    }
     if (e?.state === "failed" && !this.retryDue(e)) return Promise.resolve(toView(e));
     return this.start(key, platform, udid);
   }
@@ -269,6 +299,10 @@ export class NativePool {
           e.startedMs = this.now() - t0;
           e.handle = h;
           e.backend = platform === "ios" ? this.makeIosBackend(h.port) : this.makeAndroidBackend(h.port, udid);
+          if (platform === "ios") {
+            e.shown = (h as RunnerHandle).foreground;
+            e.foreground ??= e.shown;
+          }
         },
         (err: unknown) => {
           // The lifecycle already stopped whatever it spawned for a failed start.

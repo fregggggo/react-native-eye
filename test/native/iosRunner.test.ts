@@ -216,6 +216,76 @@ describe("startIosRunner", () => {
     expect(h.via).toBe("simctl");
   });
 
+  // Review #3: the runner was in front and is gone again — SpringBoard is
+  // left there with the app suspended unless the foreground is handed back.
+  it("a start that fails hands the foreground back to the app, after stopping xcodebuild", async () => {
+    const c = clock();
+    const { run, calls } = fakeRun({
+      "launchctl list": { stdout: LAUNCHCTL_WITHOUT_RUNNER },
+      get_app_container: { stdout: "/c/Runner.app\n" },
+      "plutil -extract": { stdout: `${VERSION}\n` },
+      "simctl launch": { stdout: `${BUNDLE}: 4242\n` },
+    });
+    const handle = fakeHandle();
+    const err = await startIosRunner(UDID, deps({ run: run as any, spawn: vi.fn(() => handle), sleep: c.sleep, now: c.now }), {
+      foreground: "com.example.app",
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(DriverError);
+    expect(handle.stop).toHaveBeenCalled();
+    expect(argv(calls).at(-1)).toEqual(["xcrun", "simctl", "launch", UDID, "com.example.app"]);
+  });
+
+  it("a start whose runner launch fails outright still hands the foreground back", async () => {
+    const { run, calls } = fakeRun({
+      "launchctl list": { stdout: LAUNCHCTL_WITHOUT_RUNNER },
+      get_app_container: { stdout: "/c/Runner.app\n" },
+      "plutil -extract": { stdout: `${VERSION}\n` },
+      [`simctl launch ${UDID} com.example.app`]: {},
+      "simctl launch": new DriverError("xcrun failed: launch refused"),
+    });
+    const spawn = vi.fn(() => fakeHandle({ exited: () => true }));
+    const err = await startIosRunner(UDID, deps({ run: run as any, spawn }), { foreground: "com.example.app" }).catch((e) => e);
+    expect(err).toBeInstanceOf(DriverError);
+    expect(argv(calls).at(-1)).toEqual(["xcrun", "simctl", "launch", UDID, "com.example.app"]);
+  });
+
+  it("with no app named, hands the front back to the one third-party app that was running, and reports it", async () => {
+    const services = [
+      "PID\tStatus\tLabel",
+      "301\t0\tUIKitApplication:com.apple.mobilesafari[9f1c][rb-legacy]",
+      "-\t0\tUIKitApplication:com.old.app[aa11][rb-legacy]",
+      "455\t0\tUIKitApplication:com.example.app[760b][rb-legacy]",
+    ].join("\n");
+    const { run, calls } = fakeRun({
+      "launchctl list": { stdout: services },
+      get_app_container: { stdout: "/c/Runner.app\n" },
+      "plutil -extract": { stdout: `${VERSION}\n` },
+      "simctl launch": { stdout: `${BUNDLE}: 4242\n` },
+    });
+    const h = await startIosRunner(UDID, deps({ run: run as any, probe: async (p) => (p === 50123 ? VERSION : undefined) }));
+    expect(h.foreground).toBe("com.example.app");
+    expect(argv(calls).at(-1)).toEqual(["xcrun", "simctl", "launch", UDID, "com.example.app"]);
+    // One launchctl read serves both the live-runner check and this.
+    expect(calls.filter((c) => c.args.includes("launchctl")).length).toBe(1);
+  });
+
+  it("with no app named and several third-party apps running, guesses none", async () => {
+    const services = [
+      "PID\tStatus\tLabel",
+      "455\t0\tUIKitApplication:com.example.app[760b][rb-legacy]",
+      "456\t0\tUIKitApplication:host.exp.Exponent[1a2b][rb-legacy]",
+    ].join("\n");
+    const { run, calls } = fakeRun({
+      "launchctl list": { stdout: services },
+      get_app_container: { stdout: "/c/Runner.app\n" },
+      "plutil -extract": { stdout: `${VERSION}\n` },
+      "simctl launch": { stdout: `${BUNDLE}: 4242\n` },
+    });
+    const h = await startIosRunner(UDID, deps({ run: run as any, probe: async (p) => (p === 50123 ? VERSION : undefined) }));
+    expect(h.foreground).toBeUndefined();
+    expect(argv(calls).at(-1)).toEqual(["xcrun", "simctl", "launch", "--terminate-running-process", UDID, BUNDLE]);
+  });
+
   it("simctl launch silent for 30s: terminates it and falls back to xcodebuild test-without-building", async () => {
     const c = clock();
     const { run, calls } = fakeRun({

@@ -73,11 +73,11 @@ describe("NativePath (android parameters)", () => {
     expect(f.marks).toEqual([]);
   });
 
-  it("readFailure never throws and says why", () => {
+  it("readFailure never throws and says why", async () => {
     const { f, np } = path(backend);
-    expect(np.readFailure("S", backend, new NativeCallError("lost", "x"))).toBe("runner dead: x");
-    expect(np.readFailure("S", backend, new NativeCallError("rejected", "y"))).toBe("runner rejected: y");
-    expect(np.readFailure("S", backend, new Error("z"))).toBe("runner error: z");
+    expect(await np.readFailure("S", backend, new NativeCallError("lost", "x"))).toBe("runner dead: x");
+    expect(await np.readFailure("S", backend, new NativeCallError("rejected", "y"))).toBe("runner rejected: y");
+    expect(await np.readFailure("S", backend, new Error("z"))).toBe("runner error: z");
     expect(f.marks).toEqual(["dead android S x"]);
   });
 
@@ -126,5 +126,75 @@ describe("NativePath with a start wait (iOS)", () => {
     };
     const np = new NativePath(pool, "ios", "iOS runner", "axe", 10);
     expect(await np.gesture("U", "tap", async () => {}, async () => {})).toEqual({ path: "axe", reason: "runner starting" });
+  });
+});
+
+// Review #4 / field test 3: a 10.5 s hierarchy timeout on a screen playing
+// video, with the server alive throughout. Two of those in a minute flapped
+// the pool to failed and force-stopped the server.
+describe("NativePath — a timeout from a runner that still answers /status is slow, not dead", () => {
+  const timeout = () => new NativeCallError("lost", "GET /hierarchy timed out after 10000ms", undefined, "timeout");
+  const withStatus = (alive: boolean) => {
+    let probes = 0;
+    const b = {
+      platform: "android",
+      status: async () => {
+        probes++;
+        if (!alive) throw new NativeCallError("refused", "ECONNREFUSED");
+        return { version: "x" };
+      },
+    } as unknown as NativeBackend;
+    return { b, probes: () => probes };
+  };
+  const path = (b: NativeBackend) => {
+    const f = fakePool(b);
+    return { f, np: new NativePath(f.pool, "android", "Android server", "adb") };
+  };
+
+  it("a read: falls back without marking the runner dead", async () => {
+    const { b, probes } = withStatus(true);
+    const { f, np } = path(b);
+    expect(await np.readFailure("S", b, timeout())).toBe("runner slow: GET /hierarchy timed out after 10000ms");
+    expect(await np.readFailure("S", b, timeout())).toMatch(/^runner slow/);
+    expect(f.marks).toEqual([]);
+    expect(probes()).toBe(2);
+  });
+
+  it("a read: still dead when /status does not answer either", async () => {
+    const { b } = withStatus(false);
+    const { f, np } = path(b);
+    expect(await np.readFailure("S", b, timeout())).toMatch(/^runner dead/);
+    expect(f.marks).toEqual(["dead android S GET /hierarchy timed out after 10000ms"]);
+  });
+
+  it("excuses at most 3 timeouts a minute: a route stuck for good still counts as dead", async () => {
+    const { b } = withStatus(true);
+    const { f, np } = path(b);
+    for (let i = 0; i < 3; i++) expect(await np.readFailure("S", b, timeout())).toMatch(/^runner slow/);
+    expect(await np.readFailure("S", b, timeout())).toMatch(/^runner dead/);
+    expect(f.marks).toHaveLength(1);
+  });
+
+  it("a refused or non-timeout loss is not excused, and /status is not asked", async () => {
+    const { b, probes } = withStatus(true);
+    const { f, np } = path(b);
+    expect(await np.readFailure("S", b, new NativeCallError("lost", "socket hang up"))).toMatch(/^runner dead/);
+    expect(await np.readFailure("S", b, new NativeCallError("refused", "ECONNREFUSED"))).toMatch(/^runner dead/);
+    expect(probes()).toBe(0);
+    expect(f.marks).toHaveLength(2);
+  });
+
+  it("a gesture: throws (delivery unknown) but leaves the runner alone", async () => {
+    const { b } = withStatus(true);
+    const { f, np } = path(b);
+    let fellBack = false;
+    const e = await np
+      .gesture("S", "tap", async () => {
+        throw timeout();
+      }, async () => void (fellBack = true))
+      .catch((x) => x);
+    expect(e.message).toMatch(/did not finish the tap in time .* but is still running/);
+    expect(fellBack).toBe(false);
+    expect(f.marks).toEqual([]);
   });
 });

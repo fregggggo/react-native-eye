@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { run, spawnLongRunning } from "../../src/core/exec.js";
+import { run, spawnLongRunning, commandLabel } from "../../src/core/exec.js";
 
 describe("run", () => {
   it("captures stdout", async () => {
@@ -24,6 +24,13 @@ describe("run", () => {
     await expect(
       run("node", ["-e", "setTimeout(() => {}, 60000)"], { timeoutMs: 100 }),
     ).rejects.toThrow(/timed out after 100ms/i);
+  });
+
+  it("names a timed-out adb call by its subcommand, not by the device flag", () => {
+    expect(commandLabel("adb", ["-s", "emulator-5554", "install", "-r", "/x.apk"])).toBe("adb install");
+    expect(commandLabel("adb", ["-s", "emulator-5554", "exec-out", "screencap", "-p"])).toBe("adb exec-out");
+    expect(commandLabel("xcrun", ["simctl", "io", "booted"])).toBe("xcrun simctl");
+    expect(commandLabel("axe", [])).toBe("axe");
   });
 
   it("merges extra env into the child environment", async () => {

@@ -336,6 +336,28 @@ describe("IosDriver.screenshotPng through the runner", () => {
     expect(await d.screenshotPng("U")).toBe(PNG_SIMCTL);
     expect(calls).toEqual(["xcrun simctl io U screenshot --type=png -"]);
   });
+
+  // Review #10: a simctl shot taken while the runner comes up shows the runner.
+  it("waits for a start in flight, then shoots through the runner", async () => {
+    const b = fakeBackend();
+    let ready: NativeBackend | undefined;
+    let finish!: () => void;
+    const inflight = new Promise<PoolEntryView>((r) => (finish = () => r({ state: "ready", via: "simctl" })));
+    const pool = {
+      get: () => ready,
+      view: (): PoolEntryView => (ready ? { state: "ready", via: "simctl" } : STARTING),
+      markDead: () => {},
+      markFailed: () => {},
+      settled: () => (ready ? undefined : inflight),
+    };
+    const r = fakeRunner();
+    const d = new IosDriver(r.runner, undefined, US, pool as any);
+    const shot = d.screenshotPng("U");
+    ready = b.backend;
+    finish();
+    expect(await shot).toBe(PNG_RUNNER);
+    expect(r.calls).toEqual([]);
+  });
 });
 
 describe("fallbackReason", () => {

@@ -63,6 +63,32 @@ describe("activeDriver device selection", () => {
     await expect(activeDriver({ drivers: [two], device: "iPhone" })).rejects.toThrow(/matches 2 devices/);
   });
 
+  // Review #9: the plainest name could never be picked without a udid.
+  it("an exact name wins over names that merely contain it", async () => {
+    const d = multiDriver([
+      { udid: "P", name: "iPhone 16 Pro", booted: true },
+      { udid: "S", name: "iPhone 16", booted: true },
+      { udid: "E", name: "iPhone 16e", booted: false },
+    ]);
+    expect((await activeDriver({ drivers: [d], device: "iphone 16" })).udid).toBe("S");
+  });
+
+  it("of one name listed once per runtime, the booted device wins", async () => {
+    const d = multiDriver([
+      { udid: "OLD", name: "iPhone 16", booted: false },
+      { udid: "NEW", name: "iPhone 16", booted: true },
+    ]);
+    expect((await activeDriver({ drivers: [d], device: "iPhone 16" })).udid).toBe("NEW");
+  });
+
+  it("still reports ambiguity when narrowing leaves two booted devices", async () => {
+    const d = multiDriver([
+      { udid: "A1", name: "iPhone 16", booted: true },
+      { udid: "A2", name: "iPhone 16", booted: true },
+    ]);
+    await expect(activeDriver({ drivers: [d], device: "iPhone 16" })).rejects.toThrow(/matches 2 devices/);
+  });
+
   it("lists what is available when the requested device is unknown", async () => {
     await expect(activeDriver({ drivers: [two], device: "Pixel" })).rejects.toThrow(/No device matching "Pixel"/);
   });

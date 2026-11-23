@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { AdbShell } from "../../src/drivers/adbShell.js";
+import { AdbShell, commandNotSent } from "../../src/drivers/adbShell.js";
 
 function fakeChild() {
   const child: any = new EventEmitter();
@@ -122,5 +122,53 @@ describe("AdbShell", () => {
     const p = shell.exec("input tap 5 6");
     await expect(p).rejects.toThrow(/input tap 5 6/);
     await expect(p).rejects.toThrow(/EPIPE/);
+  });
+
+  // Review #11: only these two prove nothing ran, so only these may be retried.
+  it("marks a failed write as not sent, but not a death or a timeout after the write", async () => {
+    const child = fakeChild();
+    child.stdin.write = () => {
+      throw new Error("EPIPE");
+    };
+    const w = await new AdbShell("SER", (() => child) as any).exec("input tap 5 6").catch((e) => e);
+    expect(commandNotSent(w)).toBe(true);
+
+    const { shell, children } = shellWithChildren();
+    const p = shell.exec("input tap 5 6");
+    await new Promise((r) => setTimeout(r, 10));
+    children[0].exitCode = 1;
+    children[0].emit("exit", 1);
+    expect(commandNotSent(await p.catch((e) => e))).toBe(false);
+
+    const t = await shellWithChildren().shell.exec("hangs", { timeoutMs: 20 }).catch((e) => e);
+    expect(commandNotSent(t)).toBe(false);
+  });
+
+  it("an adb that cannot be spawned rejects as not sent instead of crashing the process, and is not reused", async () => {
+    const children: any[] = [];
+    const shell = new AdbShell("SER", (() => {
+      const c = fakeChild();
+      c.pid = undefined;
+      children.push(c);
+      // Node reports a failed spawn asynchronously, as an 'error' event.
+      setTimeout(() => c.emit("error", new Error("spawn adb ENOENT")), 5);
+      return c;
+    }) as any);
+    const err = await shell.exec("input tap 1 2").catch((e) => e);
+    expect(err.message).toMatch(/spawn adb ENOENT/);
+    expect(commandNotSent(err)).toBe(true);
+    await shell.exec("input tap 1 2").catch(() => {});
+    expect(children).toHaveLength(2);
+  });
+
+  it("an EPIPE emitted on stdin after the shell died does not crash the process", async () => {
+    const { shell, children } = shellWithChildren();
+    const p = shell.exec("input tap 1 2");
+    await new Promise((r) => setTimeout(r, 10));
+    children[0].stdin.emit("error", Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+    const err = await p.catch((e) => e);
+    expect(commandNotSent(err)).toBe(true);
+    // A late one, with no command in flight, is swallowed too.
+    expect(() => children[0].stdin.emit("error", new Error("write EPIPE"))).not.toThrow();
   });
 });

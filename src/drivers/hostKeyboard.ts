@@ -44,12 +44,16 @@ export async function activeKeyboardLayout(run: Runner = defaultRun): Promise<st
 // into the app and reports success — the exact defect this guards. Adding a
 // layout here is a one-line change; being wrong the other way is data corruption
 // that reads as a green run.
+//
+// What matters is not the letters printed on the keys but whether the US key
+// positions axe presses come out as the same characters: ABC-QWERTZ swaps y/z,
+// ABC-AZERTY moves a/q/w/m and needs Shift for digits, and the International
+// layouts turn ' " ` ^ ~ into dead keys that swallow the next letter. Those, and
+// any other variant (no prefix rule), are refused.
 const ASCII_SAFE = new Set([
   "com.apple.keylayout.US",
   "com.apple.keylayout.USExtended",
   "com.apple.keylayout.ABC",
-  "com.apple.keylayout.ABC-QWERTZ",
-  "com.apple.keylayout.ABC-AZERTY",
   "com.apple.keylayout.British",
   "com.apple.keylayout.Australian",
   "com.apple.keylayout.Canadian",
@@ -59,8 +63,5 @@ const ASCII_SAFE = new Set([
 /** True for layouts whose key positions produce the ASCII characters printed on them. */
 export function isAsciiSafeLayout(id: string | undefined): boolean {
   if (id === undefined) return true; // Unknown is not a refusal.
-  if (ASCII_SAFE.has(id)) return true;
-  // The two Latin families ship regional variants (US-International, ABC-India)
-  // that keep the letter positions printed on the keys.
-  return /^com\.apple\.keylayout\.(US|ABC)/.test(id);
+  return ASCII_SAFE.has(id);
 }

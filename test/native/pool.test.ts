@@ -43,11 +43,12 @@ function makePool(
   const makeIosBackend = vi.fn((port: number) => fakeBackend(port));
   const makeAndroidBackend = vi.fn((port: number, serial: string) => ({ platform: "android", port, serial }) as unknown as NativeBackend);
   const releaseAndroid = vi.fn(opts.releaseAndroid ?? (async (_s: string) => {}));
+  const focusIos = vi.fn(async (_udid: string, _app: string) => {});
   const pool = new NativePool({
-    startIos, makeIosBackend, startAndroid, makeAndroidBackend, releaseAndroid,
+    startIos, makeIosBackend, startAndroid, makeAndroidBackend, releaseAndroid, focusIos,
     now: () => t, env: opts.env ?? {}, retryAfterMs: 300_000,
   });
-  return { pool, startIos, startAndroid, makeIosBackend, makeAndroidBackend, releaseAndroid, advance: (ms: number) => void (t += ms) };
+  return { pool, startIos, startAndroid, makeIosBackend, makeAndroidBackend, releaseAndroid, focusIos, advance: (ms: number) => void (t += ms) };
 }
 
 describe("NativePool", () => {
@@ -589,5 +590,66 @@ describe("sharedPool", () => {
   it("is a module singleton", () => {
     expect(sharedPool()).toBe(sharedPool());
     expect(sharedPool()).toBeInstanceOf(NativePool);
+  });
+});
+
+describe("NativePool — handing the iOS foreground back (review #3, field test on iOS 26.2)", () => {
+  it("warm() naming the app on a ready runner brings it to the front (observe before connect)", async () => {
+    // observe before connect: the start had nobody to hand the front back to.
+    const { pool, focusIos } = makePool({ startIos: async () => handle(40001, "simctl") });
+    await pool.warm("ios", "SIM-1");
+    expect(pool.view("ios", "SIM-1")?.state).toBe("ready");
+    await pool.warm("ios", "SIM-1", { foreground: "com.example.app" });
+    expect(focusIos).toHaveBeenCalledTimes(1);
+    expect(focusIos).toHaveBeenCalledWith("SIM-1", "com.example.app");
+  });
+
+  it("also for a runner reused from an earlier session", async () => {
+    const { pool, focusIos } = makePool({ startIos: async () => handle(40001, "reused") });
+    await pool.warm("ios", "SIM-1");
+    await pool.warm("ios", "SIM-1", { foreground: "com.example.app" });
+    expect(focusIos).toHaveBeenCalledWith("SIM-1", "com.example.app");
+  });
+
+  it("a warm() that names no app focuses nothing", async () => {
+    const { pool, focusIos } = makePool();
+    await pool.warm("ios", "SIM-1");
+    await pool.warm("ios", "SIM-1");
+    expect(focusIos).not.toHaveBeenCalled();
+  });
+
+  it("naming the app while a start is in flight: focused once it is ready, unless the start already handed it the front", async () => {
+    const d = deferred<RunnerHandle>();
+    const { pool, focusIos } = makePool({ startIos: () => d.promise });
+    const first = pool.warm("ios", "SIM-1");
+    const named = pool.warm("ios", "SIM-1", { foreground: "com.example.app" });
+    d.resolve(handle(40001, "simctl"));
+    await Promise.all([first, named]);
+    await flush();
+    expect(focusIos).toHaveBeenCalledWith("SIM-1", "com.example.app");
+
+    const d2 = deferred<RunnerHandle>();
+    const other = makePool({ startIos: () => d2.promise });
+    const a = other.pool.warm("ios", "SIM-1");
+    const b = other.pool.warm("ios", "SIM-1", { foreground: "com.example.app" });
+    d2.resolve({ ...handle(40001, "simctl"), foreground: "com.example.app" });
+    await Promise.all([a, b]);
+    await flush();
+    expect(other.focusIos).not.toHaveBeenCalled();
+  });
+
+  it("remembers the app a start found running, for the next start after a death", async () => {
+    const { pool, startIos } = makePool({ startIos: async () => ({ ...handle(40001, "simctl"), foreground: "com.found.app" }) });
+    await pool.warm("ios", "SIM-1");
+    pool.markDead("ios", "SIM-1", "gone", pool.get("ios", "SIM-1")!);
+    await pool.settled("ios", "SIM-1");
+    expect(startIos).toHaveBeenLastCalledWith("SIM-1", expect.objectContaining({ foreground: "com.found.app" }));
+  });
+
+  it("never focuses anything for Android", async () => {
+    const { pool, focusIos } = makePool();
+    await pool.warm("android", "emulator-5554");
+    await pool.warm("android", "emulator-5554", { foreground: "com.example.app" });
+    expect(focusIos).not.toHaveBeenCalled();
   });
 });

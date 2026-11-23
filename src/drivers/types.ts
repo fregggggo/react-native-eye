@@ -46,7 +46,15 @@ export type RawElement = {
 
 export type Viewport = { x: number; y: number; w: number; h: number };
 
-export type RecordingHandle = { finalize(): Promise<void> };
+export type RecordingHandle = {
+  finalize(): Promise<void>;
+  /**
+   * Whether the recorder process is still running. A recorder that is gone
+   * (it exited on its own, or a failed finalize ended it) leaves nothing to
+   * stop or retry. Absent: assumed running.
+   */
+  running?(): boolean;
+};
 
 /**
  * One row of a CPU sample: a thread, or one dispatch queue that ran on it —
@@ -94,7 +102,11 @@ export type CpuSample = {
 
 export type FrameStats = {
   durationMs: number;
-  /** Per-frame FrameCompleted − IntendedVsync in ms, in the order the app rendered them. */
+  /**
+   * Per-frame FrameCompleted − IntendedVsync in ms, in the order the app
+   * rendered them. Android keeps rows for the last 120 frames only, so over a
+   * longer window this is the tail of it; `totalRendered` counts all of it.
+   */
   frameDurationsMs: number[];
   /** The platform's own counters, which cover the same window but count differently. */
   totalRendered?: number;

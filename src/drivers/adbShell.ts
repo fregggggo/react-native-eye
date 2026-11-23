@@ -7,6 +7,17 @@ import { DriverError } from "../core/errors.js";
 // stream — otherwise a failed `input tap` looks exactly like a successful one.
 const DEFAULT_TIMEOUT_MS = 15000;
 
+/**
+ * The command provably never reached the device: the shell could not be
+ * started, or writing to it failed. Only then is a one-shot retry safe — a
+ * shell that died or timed out after the write may well have run it.
+ */
+export function commandNotSent(err: unknown): boolean {
+  return (err as { notSent?: boolean } | null)?.notSent === true;
+}
+
+const notSent = (message: string) => Object.assign(new DriverError(message), { notSent: true });
+
 export class AdbShell {
   private child: ChildProcess | null = null;
   private queue: Promise<unknown> = Promise.resolve();
@@ -26,8 +37,17 @@ export class AdbShell {
 
   private ensure(): ChildProcess {
     if (this.child && this.child.exitCode === null && !this.child.killed) return this.child;
-    this.child = this.spawnFn("adb", ["-s", this.serial, "shell"], { stdio: ["pipe", "pipe", "pipe"] });
-    return this.child;
+    const child = this.spawnFn("adb", ["-s", this.serial, "shell"], { stdio: ["pipe", "pipe", "pipe"] });
+    // Without listeners, a spawn failure (adb not on PATH) or an EPIPE on a
+    // shell that just died is an uncaught 'error' event: it takes the whole
+    // MCP server down. A child that failed to spawn never emits 'exit', so it
+    // is dropped here or every later command would wait out its timeout on it.
+    child.on("error", () => {
+      if (this.child === child) this.child = null;
+    });
+    child.stdin?.on("error", () => {});
+    this.child = child;
+    return child;
   }
 
   private execNow(cmd: string, timeoutMs: number): Promise<string> {
@@ -57,11 +77,23 @@ export class AdbShell {
         cleanup();
         reject(new DriverError(`adb shell \`${cmd}\` died${buf.trim() ? `: ${buf.trim()}` : ""}`));
       };
+      const onError = (e: Error) => {
+        cleanup();
+        // No pid: the process never started, so nothing ran.
+        const msg = `adb shell \`${cmd}\` could not run: ${e.message}`;
+        reject(child.pid === undefined ? notSent(msg) : new DriverError(msg));
+      };
+      const onWriteError = (e: Error) => {
+        cleanup();
+        reject(notSent(`adb shell \`${cmd}\` write failed: ${e.message}`));
+      };
       const cleanup = () => {
         if (timer) clearTimeout(timer);
         child.stdout?.off("data", onData);
         child.stderr?.off("data", onErrData);
         child.off("exit", onExit);
+        child.off("error", onError);
+        child.stdin?.off("error", onWriteError);
       };
       timer = setTimeout(() => {
         cleanup();
@@ -74,11 +106,13 @@ export class AdbShell {
       child.stdout?.on("data", onData);
       child.stderr?.on("data", onErrData);
       child.on("exit", onExit);
+      child.on("error", onError);
+      child.stdin?.on("error", onWriteError);
       try {
         child.stdin?.write(`{ ${cmd}; } 2>&1; echo ${marker}:$?\n`);
       } catch (e) {
         cleanup();
-        reject(new DriverError(`adb shell \`${cmd}\` write failed: ${String(e)}`));
+        reject(notSent(`adb shell \`${cmd}\` write failed: ${String(e)}`));
       }
     });
   }

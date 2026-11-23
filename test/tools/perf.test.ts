@@ -205,6 +205,26 @@ describe("get_fps", () => {
     expect(out).toMatch(/idle screen/i);
   });
 
+  // Review #6: framestats rows are a 120-frame ring buffer; a 10 s window at
+  // 60 Hz read as 12 frames/s.
+  it("takes the frame rate from the platform's count, and labels latency as covering the last rows only", async () => {
+    const rows = Array.from({ length: 120 }, () => 9);
+    const server = makeServer();
+    registerPerfTools(server, {
+      drivers: [
+        driverWith({
+          platform: "android",
+          frameStats: async () => ({ durationMs: 10000, frameDurationsMs: rows, totalRendered: 600, jankyFrames: 6, jankyPct: 1 }),
+        } as any),
+      ],
+    });
+    const out = (await callTool(server, "get_fps", { app_id: "com.x.app" })).content[0].text as string;
+    expect(out).toContain("600 frames in 10000ms → 60.0 frames/s produced");
+    expect(out).not.toContain("12.0 frames/s");
+    expect(out).toContain("frame latency (vsync → completed) (last 120 frames): p50 9.0ms");
+    expect(out).toMatch(/last 120 frames only/);
+  });
+
   it("states plainly that the iOS simulator has no UI-thread frames", async () => {
     await connect("com.x.app", (expr) =>
       expr.includes("requestAnimationFrame") ? JSON.stringify({ s: "ok", v: RAF_OK }) : undefined,
