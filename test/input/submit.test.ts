@@ -178,3 +178,67 @@ describe("submitExpression", () => {
     expect(src).not.toMatch(/\$\{/);
   });
 });
+
+describe("submitExpression on a stack with the same screen pushed twice", () => {
+  // react-native-screens: activityState 2 is the screen on top, 1 the one
+  // underneath that stays mounted at the same coordinates.
+  const screenAt = (activityState: number, children: NodeSpec[]): NodeSpec => ({
+    type: "RNSScreen",
+    props: { activityState },
+    rect: { x: 0, y: 0, w: 400, h: 800 },
+    children,
+  });
+  const LOWER: Rect = { x: 16, y: 600, w: 320, h: 40 };
+
+  it("submits the field on the focused screen, the one type_text would have typed into", async () => {
+    const fired: string[] = [];
+    const field = (name: string) => ({
+      placeholder: "Message",
+      value: "hi",
+      onChangeText: () => {},
+      onSubmitEditing: () => fired.push(name),
+    });
+    const root = fabricFiber({
+      ...SCREEN,
+      children: [
+        {
+          type: "RNSScreenStack",
+          children: [screenAt(1, [inputChain(field("under"))]), screenAt(2, [inputChain(field("top"), LOWER)])],
+        },
+      ],
+    });
+    const out = await submit(root, { placeholder: "Message" });
+    expect(out).toMatchObject({ submitted: true, note: '2 matched {"placeholder":"Message"}; chose the one on the focused screen' });
+    expect(fired).toEqual(["top"]);
+  });
+
+  it("with no target, submits the only field on the focused screen", async () => {
+    const fired: string[] = [];
+    const root = fabricFiber({
+      ...SCREEN,
+      children: [
+        {
+          type: "RNSScreenStack",
+          children: [
+            screenAt(1, [inputChain({ placeholder: "Search", value: "", onSubmitEditing: () => fired.push("under") })]),
+            screenAt(2, [inputChain({ placeholder: "Message", value: "", onSubmitEditing: () => fired.push("top") }, LOWER)]),
+          ],
+        },
+      ],
+    });
+    const out = await submit(root);
+    expect(out.submitted).toBe(true);
+    expect(fired).toEqual(["top"]);
+  });
+
+  it("matches into.label against aria-label too", async () => {
+    const fired: string[] = [];
+    const root = fabricFiber({
+      ...SCREEN,
+      children: [inputChain({ "aria-label": "Search box", value: "", onSubmitEditing: () => fired.push("search") })],
+    });
+    const out = await submit(root, { label: "Search box" });
+    expect(out.submitted).toBe(true);
+    expect(fired).toEqual(["search"]);
+  });
+});

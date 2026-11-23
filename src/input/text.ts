@@ -13,6 +13,8 @@ export type InputInfo = {
   y: number;
   w: number;
   h: number;
+  /** Whether the field holds keyboard focus; null when the app cannot say. */
+  hasFocus?: boolean | null;
   /**
    * The navigator scene the field sits in: `focused` when its screen is the one
    * on top of its navigator, `depth` its distance from that top (0 = topmost).
@@ -94,6 +96,49 @@ ${SCENE_RANK}
       return null;
     }
 
+    // Focus is not a prop. RN's TextInput attaches isFocused() to the instance
+    // its ref receives — on a Fabric host under stateNode.canonical.publicInstance,
+    // on Paper on the host component itself, on the composite when a ref holds
+    // it. null: nothing in the subtree could answer (the same reading submit.ts
+    // takes).
+    function instFocus(inst) {
+      if (!inst) return null;
+      if (safe(function () { return typeof inst.isFocused; }) !== "function") return null;
+      var v = safe(function () { return inst.isFocused(); });
+      return typeof v === "boolean" ? v : null;
+    }
+    function focusIn(fiber, depth) {
+      if (!fiber || depth > 12) return null;
+      var sn = safe(function () { return fiber.stateNode; });
+      var f = instFocus(sn);
+      if (f !== null) return f;
+      if (sn) {
+        f = instFocus(safe(function () { return sn.canonical && sn.canonical.publicInstance; }));
+        if (f !== null) return f;
+      }
+      var ref = safe(function () { return fiber.ref; });
+      if (ref && typeof ref === "object") {
+        f = instFocus(safe(function () { return ref.current; }));
+        if (f !== null) return f;
+      }
+      var c = safe(function () { return fiber.child; });
+      while (c) {
+        var d = focusIn(c, depth + 1);
+        if (d !== null) return d;
+        c = safe(function () { return c.sibling; });
+      }
+      return null;
+    }
+
+    // accessibilityLabel, or aria-label (RN 0.71+) — the label an into.label
+    // selector and the listing both go by.
+    function labelOf(p) {
+      var v = safe(function () { return p.accessibilityLabel; });
+      if (typeof v === "string" && v) return v;
+      v = safe(function () { return p["aria-label"]; });
+      return typeof v === "string" && v ? v : undefined;
+    }
+
     function collectInputs(done) {
       var hook = globalThis.__REACT_DEVTOOLS_GLOBAL_HOOK__;
       if (!hook || !hook.renderers || !hook.getFiberRoots) {
@@ -115,9 +160,10 @@ ${SCENE_RANK}
               props: p,
               testID: safe(function () { return p.testID; }),
               placeholder: safe(function () { return p.placeholder; }),
-              label: safe(function () { return p.accessibilityLabel; }),
+              label: labelOf(p),
               value: safe(function () { return p.value; }),
               controlled: safe(function () { return Object.prototype.hasOwnProperty.call(p, "value"); }) === true,
+              hasFocus: focusIn(fiber, 0),
               // Computed here, while the fiber is in hand: the walk is the only
               // place that still knows where this input sits in the tree.
               scene: sceneRank(fiber),
@@ -168,7 +214,7 @@ ${SCENE_RANK}
     function strip(r) {
       return {
         testID: r.testID, placeholder: r.placeholder, label: r.label,
-        value: r.value, controlled: r.controlled,
+        value: r.value, controlled: r.controlled, hasFocus: r.hasFocus,
         x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.w), h: Math.round(r.h),
         scene: { focused: r.scene.focused, depth: r.scene.depth }
       };
@@ -258,8 +304,17 @@ ${SCENE_RANK}
           background: chosen.scene.known && !onTop(chosen)
         };
       }
-      // With no target, only the focused screen is counted: a field left mounted
-      // on the screen underneath is not something the caller can be asked about.
+      // With no target, the field holding keyboard focus is the one the caller
+      // means — it is where the OS keyboard would type, and the one just typed
+      // into. Two focused fields is impossible on a real screen, so that is
+      // treated as no answer rather than a guess.
+      var holding = [];
+      for (i = 0; i < vis.length; i++) if (vis[i].hasFocus === true) holding.push(vis[i]);
+      if (holding.length === 1 && vis.length > 1) {
+        return { rec: holding[0], note: "chose the input that holds focus", background: holding[0].scene.known && !onTop(holding[0]) };
+      }
+      // Otherwise only the focused screen is counted: a field left mounted on
+      // the screen underneath is not something the caller can be asked about.
       var focused = [];
       for (i = 0; i < vis.length; i++) if (onTop(vis[i])) focused.push(vis[i]);
       var hidden = vis.length - focused.length;
@@ -283,6 +338,17 @@ ${SCENE_RANK}
           : "no text input is mounted on this screen" };
       }
       return { reason: vis.length + " text inputs on screen — pass \`into\` with one of: " + names(vis) };
+    }
+
+    // Whether any mounted input holds focus: true / false, or null when no
+    // input could say (an app whose inputs expose no isFocused()).
+    function focusSummary(recs) {
+      var known = false;
+      for (var i = 0; i < recs.length; i++) {
+        if (recs[i].hasFocus === true) return { known: true, any: true, field: describe(recs[i]) };
+        if (recs[i].hasFocus === false) known = true;
+      }
+      return known ? { known: true, any: false } : { known: false };
     }
 `;
 
@@ -362,13 +428,34 @@ export function typeExpression(target: InputTarget | null, value: string): strin
       if (!rec.controlled) {
         return JSON.stringify({ typed: false, matched: strip(rec), reason: "uncontrolled input — no value prop to drive" });
       }
+      // A field the user cannot type into is not one this may type into
+      // either, and the OS keyboard cannot reach it — so this refusal is final
+      // and never falls back (definitive).
+      var editable = safe(function () { return rec.props.editable; });
+      var readOnly = safe(function () { return rec.props.readOnly; });
+      if (editable === false || readOnly === true) {
+        return JSON.stringify({
+          typed: false, definitive: true, matched: strip(rec),
+          reason: describe(rec) + " is not editable (" + (readOnly === true ? "readOnly" : "editable={false}") + ")"
+        });
+      }
       var h = safe(function () { return rec.props.onChangeText; });
       if (typeof h !== "function") {
         return JSON.stringify({ typed: false, matched: strip(rec), reason: "input has a value prop but no onChangeText handler" });
       }
-      try { h(VALUE); }
+      // The native field never lets more than maxLength characters in, so its
+      // onChangeText never sees more; neither does this one.
+      var send = VALUE, notes = [];
+      var maxLen = safe(function () { return rec.props.maxLength; });
+      if (typeof maxLen === "number" && maxLen >= 0 && send.length > maxLen) {
+        send = send.slice(0, maxLen);
+        notes.push("maxLength " + maxLen + ": typed the first " + maxLen + " of " + VALUE.length + " characters");
+      }
+      try { h(send); }
       catch (e) { return JSON.stringify({ typed: false, matched: strip(rec), reason: "onChangeText threw: " + String(e) }); }
-      return JSON.stringify({ typed: true, matched: strip(rec), note: sceneNote(picked, "typed into") });`,
+      var sn = sceneNote(picked, "typed into");
+      if (sn) notes.unshift(sn);
+      return JSON.stringify({ typed: true, sent: send, matched: strip(rec), note: notes.length ? notes.join("; ") : undefined });`,
   );
 }
 
@@ -378,13 +465,17 @@ export function readInputExpression(target: InputTarget | null): string {
     `    var TARGET = ${lit(target)};`,
     `
       if (!recs) return JSON.stringify({ found: false, reason: err });
+      var focus = focusSummary(recs);
+      // How many inputs are mounted at all: zero means no React Native field
+      // can be holding focus, whether or not the inputs could report it.
+      var inputs = recs.length;
       var picked = pick(recs, TARGET);
-      if (!picked.rec) return JSON.stringify({ found: false, reason: picked.reason });
+      if (!picked.rec) return JSON.stringify({ found: false, reason: picked.reason, focus: focus, inputs: inputs });
       var rec = picked.rec;
       if (!rec.controlled) {
-        return JSON.stringify({ found: false, reason: "uncontrolled input — no value prop to read" });
+        return JSON.stringify({ found: false, reason: "uncontrolled input — no value prop to read", focus: focus, inputs: inputs });
       }
       var v = safe(function () { return rec.props.value; });
-      return JSON.stringify({ found: true, value: v == null ? "" : String(v), note: sceneNote(picked, "read from") });`,
+      return JSON.stringify({ found: true, value: v == null ? "" : String(v), note: sceneNote(picked, "read from"), focus: focus, inputs: inputs });`,
   );
 }

@@ -191,7 +191,13 @@ describe("scroll container reached through an alternate fiber (D36)", () => {
   function hostScrollViewTree(calls: any[]) {
     const hosts: any = fabricFiber(LIST_HOSTS);
     // Fabric ScrollView: the scroll API is assigned onto the host's public instance.
-    hosts.stateNode.canonical.publicInstance = { scrollTo: (a: any) => calls.push(a) };
+    const move = mover(hosts);
+    hosts.stateNode.canonical.publicInstance = {
+      scrollTo: (a: any) => {
+        calls.push(a);
+        move(a.y);
+      },
+    };
     const wrapper = composite("CssInterop.ScrollView", null, hosts);
     const root = screen(wrapper);
     const wrapperAlt = staleTwin(wrapper, root);
@@ -225,6 +231,44 @@ describe("scroll container reached through an alternate fiber (D36)", () => {
   });
 });
 
+/**
+ * The By route reads the container again after scrolling and reports a scroll
+ * that did not move as a failure, so a fake scroll API has to move the content
+ * view the way the native side does. Assigns a fresh rect: the spec rects are
+ * shared constants.
+ */
+function mover(hosts: any, horizontal = false) {
+  const frame = hosts.stateNode.node.__rect;
+  const content = hosts.child;
+  return (offset: number) => {
+    const r = content.stateNode.node.__rect;
+    content.stateNode.node.__rect = horizontal ? { ...r, x: frame.x - offset } : { ...r, y: frame.y - offset };
+  };
+}
+
+/** A FlatList-shaped instance whose scrollToOffset moves `hosts`' content. */
+function movingList(hosts: any, calls: any[], extra: Record<string, unknown> = {}, horizontal = false) {
+  const move = mover(hosts, horizontal);
+  return {
+    scrollToOffset: (a: any) => {
+      calls.push(a);
+      move(a.offset);
+    },
+    ...extra,
+  };
+}
+
+/** A ScrollView-shaped instance whose scrollTo moves `hosts`' content. */
+function movingScrollView(hosts: any, calls: any[], horizontal = false) {
+  const move = mover(hosts, horizontal);
+  return {
+    scrollTo: (a: any) => {
+      calls.push(a);
+      move(horizontal ? a.x : a.y);
+    },
+  };
+}
+
 async function scrollBy(root: any, x: number, y: number, dx: number, dy: number): Promise<ScrollByResult> {
   const runtime = makeRuntime(hookGlobals(root, { fabric: true }));
   const conn = new Connection(fakeClient(runtime) as any, { port: 0, targetId: "t", title: "fake" });
@@ -239,9 +283,8 @@ async function scrollBy(root: any, x: number, y: number, dx: number, dy: number)
 describe("scrollByExpression", () => {
   it("adds the delta to a FlatList's current offset", async () => {
     const calls: any[] = [];
-    const root = screen(
-      composite("FlatList", { scrollToOffset: (a: any) => calls.push(a) }, fabricFiber(LIST_HOSTS)),
-    );
+    const hosts = fabricFiber(LIST_HOSTS);
+    const root = screen(composite("FlatList", movingList(hosts, calls), hosts));
     // The point is anywhere over the list, not over the row: a swipe starts
     // wherever the finger lands.
     const out = await scrollBy(root, 200, 200, 0, 200);
@@ -262,7 +305,8 @@ describe("scrollByExpression", () => {
       rect: { x: 0, y: 0, w: 400, h: 800 },
       children: [{ type: "RCTScrollContentView", rect: { x: 0, y: 0, w: 400, h: 2000 } }],
     };
-    const root = screen(composite("ScrollView", { scrollTo: (a: any) => calls.push(a) }, fabricFiber(hosts)));
+    const fiber = fabricFiber(hosts);
+    const root = screen(composite("ScrollView", movingScrollView(fiber, calls), fiber));
     const out = await scrollBy(root, 200, 400, 0, 640);
     expect(out).toMatchObject({ scrolled: true, container: "ScrollView", method: "scrollTo", from: 0, to: 640 });
     expect(calls[0]).toEqual({ x: 0, y: 640, animated: false });
@@ -270,9 +314,8 @@ describe("scrollByExpression", () => {
 
   it("never scrolls past the top of the content", async () => {
     const calls: any[] = [];
-    const root = screen(
-      composite("FlatList", { scrollToOffset: (a: any) => calls.push(a) }, fabricFiber(LIST_HOSTS)),
-    );
+    const hosts = fabricFiber(LIST_HOSTS);
+    const root = screen(composite("FlatList", movingList(hosts, calls), hosts));
     // A swipe down at the top of a list that is only 500pt in: the offset floors
     // at 0 rather than going negative, which RN would clamp anyway — but the
     // reported `to` must be the offset that was actually asked for.
@@ -288,11 +331,8 @@ describe("scrollByExpression", () => {
       rect: { x: 0, y: 0, w: 400, h: 200 },
       children: [{ type: "RCTScrollContentView", rect: { x: -300, y: 0, w: 2000, h: 200 } }],
     };
-    const root = screen(
-      composite("FlatList", { scrollToOffset: (a: any) => calls.push(a) }, fabricFiber(hosts), {
-        horizontal: true,
-      }),
-    );
+    const fiber = fabricFiber(hosts);
+    const root = screen(composite("FlatList", movingList(fiber, calls, {}, true), fiber, { horizontal: true }));
     const out = await scrollBy(root, 200, 100, 150, 0);
     expect(out).toMatchObject({ scrolled: true, from: 300, to: 450 });
     expect(calls[0].offset).toBe(450);
@@ -300,24 +340,26 @@ describe("scrollByExpression", () => {
 
   it("prefers the live offset a VirtualizedList records over the measured one", async () => {
     const calls: any[] = [];
-    const root = screen(
-      composite(
-        "FlatList",
-        { scrollToOffset: (a: any) => calls.push(a), _scrollMetrics: { offset: 512 } },
-        fabricFiber(LIST_HOSTS),
-      ),
-    );
+    const hosts = fabricFiber(LIST_HOSTS);
+    const root = screen(composite("FlatList", movingList(hosts, calls, { _scrollMetrics: { offset: 512 } }), hosts));
     const out = await scrollBy(root, 200, 200, 0, 100);
     expect(out).toMatchObject({ from: 512, to: 612 });
   });
 
   it("calls RecyclerListView's positional scrollToOffset(x, y, animate)", async () => {
     const calls: any[][] = [];
+    const hosts = fabricFiber(LIST_HOSTS);
+    const move = mover(hosts);
     const root = screen(
       composite(
         "RecyclerListView",
-        { scrollToOffset: (...a: any[]) => calls.push(a) },
-        fabricFiber(LIST_HOSTS),
+        {
+          scrollToOffset: (...a: any[]) => {
+            calls.push(a);
+            move(a[1]);
+          },
+        },
+        hosts,
       ),
     );
     const out = await scrollBy(root, 200, 200, 0, 200);
@@ -330,15 +372,12 @@ describe("scrollByExpression", () => {
     // scrollToOffset takes an object, and it is the component the caller wrote.
     const rlvCalls: any[][] = [];
     const flCalls: any[] = [];
+    const hosts = fabricFiber(LIST_HOSTS);
     const root = screen(
       composite(
         "FlashList",
-        { scrollToOffset: (a: any) => flCalls.push(a) },
-        composite(
-          "RecyclerListView",
-          { scrollToOffset: (...a: any[]) => rlvCalls.push(a) },
-          fabricFiber(LIST_HOSTS),
-        ),
+        movingList(hosts, flCalls),
+        composite("RecyclerListView", { scrollToOffset: (...a: any[]) => rlvCalls.push(a) }, hosts),
       ),
     );
     const out = await scrollBy(root, 200, 200, 0, 200);
@@ -358,5 +397,185 @@ describe("scrollByExpression", () => {
     const out = await scrollBy(root, 100, 20, 0, 200);
     expect(out.scrolled).toBe(false);
     expect((out as any).reason).toBe("no scroll container under 100,20");
+  });
+});
+
+/** A tall list: frame 0-800, content 2000 tall, scrolled `offset` down. */
+function tallList(offset: number, props: Record<string, unknown> = {}) {
+  const hosts = fabricFiber({
+    type: "RCTScrollView",
+    rect: { x: 0, y: 0, w: 400, h: 800 },
+    children: [{ type: "RCTScrollContentView", rect: { x: 0, y: -offset, w: 400, h: 2000 } }],
+  });
+  const calls: any[] = [];
+  const root = screen(composite("ScrollView", movingScrollView(hosts, calls), hosts, props));
+  return { root, calls };
+}
+
+/** A horizontal pager: frame 400 wide, four pages, at `offset`. */
+function pager(offset: number, props: Record<string, unknown>) {
+  const hosts = fabricFiber({
+    type: "RCTScrollView",
+    rect: { x: 0, y: 100, w: 400, h: 300 },
+    children: [{ type: "RCTScrollContentView", rect: { x: -offset, y: 100, w: 1600, h: 300 } }],
+  });
+  const calls: any[] = [];
+  const root = screen(composite("ScrollView", movingScrollView(hosts, calls, true), hosts, { horizontal: true, ...props }));
+  return { root, calls };
+}
+
+describe("scrollByExpression: where the content can actually go", () => {
+  it("moves a pagingEnabled scroll view one whole page, not to an offset between pages", async () => {
+    // Live: a 478px swipe on a pager came back "scrollTo 0 → 478" twice while
+    // nothing moved.
+    const { root, calls } = pager(0, { pagingEnabled: true });
+    const out = await scrollBy(root, 200, 250, 478, 0);
+    expect(out).toMatchObject({ scrolled: true, from: 0, to: 400 });
+    expect(calls[0]).toEqual({ x: 400, y: 0, animated: false });
+  });
+
+  it("moves a pager one page even for a short fling, and back again", async () => {
+    const fwd = pager(400, { pagingEnabled: true });
+    expect(await scrollBy(fwd.root, 200, 250, 60, 0)).toMatchObject({ scrolled: true, from: 400, to: 800 });
+    const back = pager(400, { pagingEnabled: true });
+    expect(await scrollBy(back.root, 200, 250, -60, 0)).toMatchObject({ scrolled: true, from: 400, to: 0 });
+  });
+
+  it("rests on the nearest snapToInterval / snapToOffsets point", async () => {
+    const interval = tallList(0, { snapToInterval: 300 });
+    expect(await scrollBy(interval.root, 200, 400, 0, 478)).toMatchObject({ scrolled: true, to: 600 });
+    const offsets = tallList(0, { snapToOffsets: [900, 0, 250] });
+    expect(await scrollBy(offsets.root, 200, 400, 0, 478)).toMatchObject({ scrolled: true, to: 250 });
+  });
+
+  it("stops at the end of the content and reports where it really went", async () => {
+    // 2000 of content in an 800 frame ends at 1200.
+    const { root, calls } = tallList(1100);
+    const out = await scrollBy(root, 200, 400, 0, 640);
+    expect(out).toMatchObject({ scrolled: true, from: 1100, to: 1200 });
+    expect(calls[0].y).toBe(1200);
+  });
+
+  it("refuses instead of reporting a scroll when the content is already at the end", async () => {
+    const { root, calls } = tallList(1200);
+    const out = await scrollBy(root, 200, 400, 0, 300);
+    expect(out.scrolled).toBe(false);
+    expect((out as any).reason).toMatch(/already at the end \(offset 1200 of 1200\)/);
+    expect(calls).toEqual([]);
+  });
+
+  it("reports a scroll whose call returned but whose content never moved as a failure", async () => {
+    const calls: any[] = [];
+    const root = screen(
+      composite("ScrollView", { scrollTo: (a: any) => calls.push(a) }, fabricFiber(LIST_HOSTS), { pagingEnabled: false }),
+    );
+    const out = await scrollBy(root, 200, 200, 0, 200);
+    expect(calls).toHaveLength(1);
+    expect(out.scrolled).toBe(false);
+    expect((out as any).reason).toMatch(/ScrollView\.scrollTo\(700\) returned but the content did not move \(still at 500\)/);
+  });
+});
+
+describe("scrollByExpression: which container the finger is on", () => {
+  it("scrolls the list on screen, not the same list on a hidden screen mounted at the same place", async () => {
+    // A stack keeps the screen below mounted at identical coordinates; it is
+    // walked first, and its row is the smaller frame under the finger.
+    const hiddenCalls: any[] = [];
+    const shownCalls: any[] = [];
+    const listIn = (calls: any[]) => {
+      const hosts = fabricFiber({
+        type: "RCTScrollView",
+        rect: { x: 0, y: 0, w: 400, h: 800 },
+        children: [
+          {
+            type: "RCTScrollContentView",
+            rect: { x: 0, y: 0, w: 400, h: 3000 },
+            children: [{ type: "RCTText", props: { children: "Row" }, rect: { x: 0, y: 570, w: 400, h: 60 } }],
+          },
+        ],
+      });
+      return composite("FlatList", movingList(hosts, calls), hosts);
+    };
+    const scene = (focused: boolean, calls: any[]) => {
+      const s = composite("SceneView", null, listIn(calls), { focused, descriptor: {} });
+      return s;
+    };
+    const below = scene(false, hiddenCalls);
+    below.sibling = scene(true, shownCalls);
+    const out = await scrollBy(screen(below), 200, 600, 0, 300);
+    expect(out).toMatchObject({ scrolled: true, from: 0, to: 300 });
+    expect(hiddenCalls).toEqual([]);
+    expect(shownCalls).toHaveLength(1);
+  });
+
+  it("gives a vertical swipe on a horizontal carousel to the vertical list around it", async () => {
+    const make = () => {
+      const listCalls: any[] = [];
+      const carouselCalls: any[] = [];
+      const carouselHosts = fabricFiber({
+        type: "RCTScrollView",
+        rect: { x: 0, y: 200, w: 400, h: 200 },
+        children: [
+          {
+            type: "RCTScrollContentView",
+            rect: { x: 0, y: 200, w: 1600, h: 200 },
+            children: [{ type: "RCTText", props: { children: "Card" }, rect: { x: 10, y: 210, w: 300, h: 180 } }],
+          },
+        ],
+      });
+      const carousel = composite("FlatList", movingList(carouselHosts, carouselCalls, {}, true), carouselHosts, {
+        horizontal: true,
+      });
+      const listHosts = fabricFiber({
+        type: "RCTScrollView",
+        rect: { x: 0, y: 0, w: 400, h: 800 },
+        children: [{ type: "RCTScrollContentView", rect: { x: 0, y: 0, w: 400, h: 3000 } }],
+      });
+      listHosts.child.child = carousel;
+      const list = composite("FlatList", movingList(listHosts, listCalls), listHosts);
+      return { root: screen(list), listCalls, carouselCalls };
+    };
+    const v = make();
+    expect(await scrollBy(v.root, 200, 300, 0, 300)).toMatchObject({ scrolled: true, from: 0, to: 300 });
+    expect(v.carouselCalls).toEqual([]);
+    expect(v.listCalls).toHaveLength(1);
+
+    const h = make();
+    expect(await scrollBy(h.root, 200, 300, 300, 0)).toMatchObject({ scrolled: true, from: 0, to: 300 });
+    expect(h.listCalls).toEqual([]);
+    expect(h.carouselCalls).toHaveLength(1);
+  });
+
+  it("says when the only container under the finger scrolls the other way", async () => {
+    const { root } = pager(0, {});
+    const out = await scrollBy(root, 200, 250, 0, 300);
+    expect(out.scrolled).toBe(false);
+    expect((out as any).reason).toMatch(/no vertical scroll container under 200,250 \(ScrollView there scrolls horizontally\)/);
+  });
+});
+
+describe("scrollToExpression: the named target", () => {
+  it("finds the target under a tab bar painted over its centre", async () => {
+    const calls: any[] = [];
+    const hosts = fabricFiber({
+      type: "RCTScrollView",
+      rect: { x: 0, y: 0, w: 400, h: 700 },
+      children: [
+        {
+          type: "RCTScrollContentView",
+          rect: { x: 0, y: 0, w: 400, h: 2000 },
+          children: [{ type: "RCTText", props: { children: "Row 15" }, rect: { x: 0, y: 740, w: 400, h: 40 } }],
+        },
+      ],
+    });
+    const list = composite("FlatList", movingList(hosts, calls), hosts);
+    // A bigger frame first, then the tab bar: smallest-area alone would pick
+    // the tab bar label, which is smaller than the row.
+    list.sibling = fabricFiber({ type: "RCTText", props: { children: "Home" }, rect: { x: 150, y: 750, w: 100, h: 20 } });
+    const runtime = makeRuntime(hookGlobals(screen(list), { fabric: true }));
+    const conn = new Connection(fakeClient(runtime) as any, { port: 0, targetId: "t", title: "fake" });
+    const out = JSON.parse(await conn.evaluate(scrollToExpression(200, 760, { text: "Row 15" })));
+    expect(out).toEqual({ scrolled: true, container: "FlatList", method: "scrollToOffset" });
+    expect(calls[0].offset).toBe(565);
   });
 });

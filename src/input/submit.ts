@@ -11,6 +11,7 @@
 // release cycles. The duplication is the same shape of fiber walk, with one
 // addition text.ts has no use for — which input holds focus.
 import { SAFE, MEASURER } from "../layout/runtimeSnippets.js";
+import { SCENE_RANK } from "./focusedScreen.js";
 import type { InputTarget } from "./text.js";
 
 export type SubmitResult =
@@ -48,6 +49,7 @@ export function submitExpression(target: InputTarget | null): string {
 
 ${SAFE}
 ${MEASURER}
+${SCENE_RANK}
 
     function displayName(fiber) {
       var t = safe(function () { return fiber.type; });
@@ -149,6 +151,13 @@ ${MEASURER}
       return undefined;
     }
 
+    function labelOf(p) {
+      var v = safe(function () { return p.accessibilityLabel; });
+      if (typeof v === "string" && v) return v;
+      v = safe(function () { return p["aria-label"]; });
+      return typeof v === "string" && v ? v : undefined;
+    }
+
     function collectInputs(done) {
       var hook = globalThis.__REACT_DEVTOOLS_GLOBAL_HOOK__;
       if (!hook || !hook.renderers || !hook.getFiberRoots) {
@@ -169,8 +178,11 @@ ${MEASURER}
               props: p,
               testID: safe(function () { return p.testID; }),
               placeholder: safe(function () { return p.placeholder; }),
-              label: safe(function () { return p.accessibilityLabel; }),
+              label: labelOf(p),
               focused: focusIn(fiber, 0) === true,
+              // Which screen the field is on, ranked the way type_text ranks it:
+              // the same screen pushed twice mounts two identical fields.
+              scene: sceneRank(fiber),
               tag: tagIn(fiber, 0),
               m: measurerIn(fiber, 0),
               x: 0, y: 0, w: 0, h: 0
@@ -229,6 +241,16 @@ ${MEASURER}
       return out.join(", ");
     }
 
+    function onTop(r) { return r.scene.focused === true && r.scene.depth === 0; }
+    function rank(r) { return (r.scene.focused ? 0 : 1000) + r.scene.depth; }
+    function bestRanked(list) {
+      var i, b = rank(list[0]);
+      for (i = 1; i < list.length; i++) if (rank(list[i]) < b) b = rank(list[i]);
+      var out = [];
+      for (i = 0; i < list.length; i++) if (rank(list[i]) === b) out.push(list[i]);
+      return out;
+    }
+
     function pick(recs, target) {
       var i, vis = [];
       for (i = 0; i < recs.length; i++) if (recs[i].w > 0 && recs[i].h > 0) vis.push(recs[i]);
@@ -246,11 +268,20 @@ ${MEASURER}
           return { reason: "no text input matched " + JSON.stringify(target) +
             (recs.length ? " — mounted inputs: " + names(recs) : " — no text input is mounted") };
         }
-        if (hits.length > 1) {
-          return { reason: hits.length + " text inputs matched " + JSON.stringify(target) +
-            " — narrow it: " + names(hits) };
+        // Same field on two screens of one stack: the screen the user is
+        // looking at wins, exactly as it does for type_text — the two tools
+        // must never pick different fields for the same selector.
+        var top = bestRanked(hits);
+        if (top.length > 1) {
+          return { reason: top.length + " text inputs matched " + JSON.stringify(target) +
+            " — narrow it: " + names(top) };
         }
-        return { rec: hits[0] };
+        return {
+          rec: top[0],
+          note: hits.length > 1 && onTop(top[0])
+            ? hits.length + " matched " + JSON.stringify(target) + "; chose the one on the focused screen"
+            : (top[0].scene.known && !onTop(top[0]) ? "submitted a field on a background screen" : undefined)
+        };
       }
       if (vis.length === 1) return { rec: vis[0] };
       // More than one field and no target: the focused one is the field the
@@ -261,12 +292,21 @@ ${MEASURER}
       var foc = [];
       for (i = 0; i < recs.length; i++) if (recs[i].focused) foc.push(recs[i]);
       if (foc.length === 1) return { rec: foc[0] };
+      // Then the focused screen alone: a field left mounted on the screen
+      // underneath is not one the caller can see.
+      var shown = [];
+      for (i = 0; i < vis.length; i++) if (onTop(vis[i])) shown.push(vis[i]);
+      if (shown.length === 1) {
+        return { rec: shown[0], note: "chose the only input on the focused screen; " + (vis.length - 1) +
+          (vis.length - 1 === 1 ? " more is" : " more are") + " on background screens" };
+      }
       if (!vis.length) {
         return { reason: recs.length
           ? recs.length + " text inputs are mounted but none could be measured"
           : "no text input is mounted on this screen" };
       }
-      return { reason: vis.length + " text inputs on screen and none holds focus — pass \`into\` with one of: " + names(vis) };
+      var list = shown.length ? shown : vis;
+      return { reason: list.length + " text inputs on screen and none holds focus — pass \`into\` with one of: " + names(list) };
     }
 
     function fire(h, txt, tag) {
@@ -303,14 +343,14 @@ ${MEASURER}
       }
       fired.push("onSubmitEditing");
 
-      var note;
+      var note = picked.note;
       var onEnd = safe(function () { return p.onEndEditing; });
       if (typeof onEnd === "function") {
         try { fire(onEnd, txt, rec.tag); fired.push("onEndEditing"); }
         // The submit already landed, so a failure below it is a note, not a
         // failed submit — reporting it as one would make the caller retry a
         // handler that has already run.
-        catch (e2) { note = "onEndEditing threw: " + String(e2); }
+        catch (e2) { note = (note ? note + "; " : "") + "onEndEditing threw: " + String(e2); }
       }
 
       // RN blurs a single-line field on submit unless blurOnSubmit is
@@ -319,7 +359,7 @@ ${MEASURER}
         var onBlur = safe(function () { return p.onBlur; });
         if (typeof onBlur === "function") {
           try { fire(onBlur, txt, rec.tag); fired.push("onBlur"); }
-          catch (e3) { if (!note) note = "onBlur threw: " + String(e3); }
+          catch (e3) { note = (note ? note + "; " : "") + "onBlur threw: " + String(e3); }
         }
       }
       return JSON.stringify({ submitted: true, field: field, handlers: fired, note: note });

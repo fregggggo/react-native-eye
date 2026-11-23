@@ -93,12 +93,23 @@ describe("sceneRank", () => {
     const out = ranks({
       type: "CardStack",
       children: [
-        { type: "Card", props: { focused: false }, children: [leaf("under")] },
-        { type: "Card", props: { focused: true }, children: [leaf("top")] },
+        { type: "CardContainer", props: { focused: false, scene: { route: { key: "u" } } }, children: [leaf("under")] },
+        { type: "CardContainer", props: { focused: true, scene: { route: { key: "t" } } }, children: [leaf("top")] },
       ],
     });
     expect(out.top).toEqual({ focused: true, depth: 0, known: true });
     expect(out.under).toEqual({ focused: false, depth: 1, known: true });
+  });
+
+  it("does not take a tab button's focused:false for a background screen", () => {
+    // BottomTabItem carries focused, route and descriptor — and onPress.
+    const out = ranks({
+      type: "TabBar",
+      children: [
+        { type: "BottomTabItem", props: { focused: false, route: { key: "x" }, onPress: () => {} }, children: [leaf("tab")] },
+      ],
+    });
+    expect(out.tab).toEqual({ focused: true, depth: 0, known: false });
   });
 
   it("ranks a pager by its own index against the navigator's", () => {
@@ -124,8 +135,8 @@ describe("sceneRank", () => {
             {
               type: "Pager",
               children: [
-                { type: "Page", props: { focused: false }, children: [leaf("otherTab")] },
-                { type: "Page", props: { focused: true }, children: [leaf("thisTab")] },
+                { type: "Page", props: { focused: false, route: { key: "o" } }, children: [leaf("otherTab")] },
+                { type: "Page", props: { focused: true, route: { key: "t" } }, children: [leaf("thisTab")] },
               ],
             },
           ],

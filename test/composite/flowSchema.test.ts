@@ -145,3 +145,46 @@ describe("input path and typing target", () => {
     expect((steps[0].type as any).via).toBe("os");
   });
 });
+
+describe("parseFlowInput: selectors and modifiers that would be silently ignored", () => {
+  const bad = (step: Record<string, unknown>) => () => parseFlowInput({ steps: [step] });
+
+  it("rejects an assertion with no selector — expect_not:{} used to pass vacuously", () => {
+    expect(bad({ expect_not: {} })).toThrow(/Step 1: expect_not needs a selector: one of text or testID/);
+    expect(bad({ expect: {} })).toThrow(/Step 1: expect needs a selector/);
+    expect(bad({ wait_for: { timeout_ms: 100 } })).toThrow(/Step 1: wait_for needs a selector/);
+  });
+
+  it("rejects an empty selector, which matched every label as a substring", () => {
+    expect(bad({ tap: { text: "" } })).toThrow(/Step 1: tap has an empty selector/);
+    expect(bad({ expect: { testID: "" } })).toThrow(/Step 1: expect has an empty selector/);
+  });
+
+  it("rejects two selectors at once instead of using one and dropping the other", () => {
+    expect(bad({ tap: { text: "Go", testID: "go" } })).toThrow(/tap has 2 selectors \(text, testID\) — give exactly one of text, testID, or x\+y/);
+    expect(bad({ tap: { text: "Go", x: 1, y: 2 } })).toThrow(/tap has 2 selectors/);
+    expect(bad({ expect: { text: "A", testID: "a" } })).toThrow(/expect has 2 selectors/);
+  });
+
+  it("rejects half a coordinate", () => {
+    expect(bad({ tap: { x: 10 } })).toThrow(/Step 1: tap needs both x and y/);
+  });
+
+  it("rejects settle on a step the runner does not settle after", () => {
+    expect(bad({ expect: { text: "Home" }, settle: 300 })).toThrow(
+      /Step 1: settle only applies after tap, type, swipe, eval — a expect step does not wait on it/,
+    );
+    expect(() => parseFlowInput({ steps: [{ swipe: { direction: "up" }, settle: 300 }] })).not.toThrow();
+  });
+
+  it("accepts exact on expect, expect_not and wait_for", () => {
+    const { steps } = parseFlowInput({
+      steps: [
+        { expect: { text: "Row 1", exact: true } },
+        { expect_not: { text: "Row 1", exact: true } },
+        { wait_for: { text: "Row 1", exact: true, timeout_ms: 100 } },
+      ],
+    });
+    expect((steps[0].expect as any).exact).toBe(true);
+  });
+});

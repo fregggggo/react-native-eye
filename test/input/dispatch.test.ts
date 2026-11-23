@@ -272,13 +272,141 @@ describe("dispatchType", () => {
     // "cat" through axe type arrives as other characters under a non-Latin host
     // keyboard layout, and today that returns as success.
     const { driver } = fakeDriver();
+    const conn = fakeConn({ read: [{ found: true, value: "" }, { found: true, value: "ψατ" }] });
+    await expect(
+      dispatchType({ driver, udid: "U", value: "cat", via: "os", conn: conn as any, verify: true }),
+    ).rejects.toThrow(/Typed "cat" but the field now reads "ψατ" — the text was corrupted in transit\./);
+  });
+
+  it("calls a JS read-back that differs an app-side reformat, not corruption", async () => {
+    // onChangeText received the exact string; a phone mask then rewrote it.
+    const { driver } = fakeDriver();
     const conn = fakeConn({
-      type: { typed: true, matched: { placeholder: "Search", controlled: true } },
-      read: [{ found: true, value: "ψατ" }],
+      type: { typed: true, matched: { placeholder: "Phone", controlled: true, value: "" } },
+      read: [{ found: true, value: "(555) 123-4" }],
+    });
+    const out = await dispatchType({ driver, udid: "U", value: "5551234", via: "auto", conn: conn as any, verify: true });
+    expect(out.marker).toBe("(input: js)");
+    expect(out.note).toBe('The app reformatted the value: the field now reads "(555) 123-4".');
+  });
+
+  it("says the app dropped the value when a JS read-back is unchanged", async () => {
+    const { driver } = fakeDriver();
+    const conn = fakeConn({
+      type: { typed: true, matched: { placeholder: "Age", controlled: true, value: "" } },
+      read: [{ found: true, value: "" }],
     });
     await expect(
-      dispatchType({ driver, udid: "U", value: "cat", via: "auto", conn: conn as any, verify: true }),
-    ).rejects.toThrow(/Typed "cat" but the field now reads "ψατ" — the text was corrupted in transit\./);
+      dispatchType({ driver, udid: "U", value: "abc", via: "auto", conn: conn as any, verify: true }),
+    ).rejects.toThrow(/onChangeText\("abc"\) ran but the field still reads "" — the app ignored or rejected the input/);
+  });
+
+  it("checks against what maxLength let through, and keeps the app's note", async () => {
+    const { driver } = fakeDriver();
+    const conn = fakeConn({
+      type: {
+        typed: true,
+        sent: "12345",
+        matched: { placeholder: "Code", controlled: true, value: "" },
+        note: "maxLength 5: typed the first 5 of 8 characters",
+      },
+      read: [{ found: true, value: "12345" }],
+    });
+    const out = await dispatchType({ driver, udid: "U", value: "12345678", via: "auto", conn: conn as any, verify: true });
+    expect(out.note).toBe("maxLength 5: typed the first 5 of 8 characters");
+  });
+
+  it("refuses for good on a field that is not editable — the keyboard cannot reach it either", async () => {
+    const { typed, driver } = fakeDriver();
+    const conn = fakeConn({
+      type: { typed: false, definitive: true, reason: 'placeholder "Email" is not editable (editable={false})' },
+    });
+    await expect(
+      dispatchType({ driver, udid: "U", value: "a", via: "auto", conn: conn as any, verify: true }),
+    ).rejects.toThrow(/Cannot type: placeholder "Email" is not editable \(editable=\{false\}\)/);
+    expect(typed).toEqual([]);
+  });
+
+  it("refuses OS typing when the app says no field holds focus, carrying the JS reason on auto", async () => {
+    const { typed, driver } = fakeDriver();
+    const conn = fakeConn({
+      type: { typed: false, reason: "uncontrolled input — no value prop to drive" },
+      read: [{ found: false, reason: "uncontrolled input — no value prop to read", focus: { known: true, any: false } }],
+    });
+    const err: unknown = await dispatchType({
+      driver,
+      udid: "U",
+      value: "cat",
+      via: "auto",
+      conn: conn as any,
+      verify: true,
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(UserInputError);
+    expect((err as Error).message).toMatch(/No field has focus, so the OS keyboard would type into nothing — tap the field first, or use via: "js" with `into`\./);
+    expect((err as Error).message).toContain("The JS path was tried first: uncontrolled input — no value prop to drive.");
+    expect(typed).toEqual([]);
+  });
+
+  it("refuses on auto when no text input is mounted at all, instead of typing into nothing", async () => {
+    // Live: `type_text {text:"x"}` on a screen with no input answered
+    // "Typed 1 chars. (input: os/runner — no text input is mounted on this screen)".
+    const { typed, driver } = fakeDriver();
+    const conn = fakeConn({
+      type: { typed: false, reason: "no text input is mounted on this screen" },
+      read: [{ found: false, reason: "no text input is mounted on this screen", focus: { known: false }, inputs: 0 }],
+    });
+    const err: unknown = await dispatchType({ driver, udid: "U", value: "x", via: "auto", conn: conn as any, verify: true }).catch(
+      (e) => e,
+    );
+    expect(err).toBeInstanceOf(UserInputError);
+    expect((err as Error).message).toMatch(/^No text input is mounted on this screen, so the OS keyboard would type into nothing/);
+    expect(typed).toEqual([]);
+  });
+
+  it("lets an explicit via: os type with no RN field focused (a WebView field), unverified", async () => {
+    const { typed, driver } = fakeDriver();
+    const conn = fakeConn({ read: [{ found: true, value: "", focus: { known: true, any: false } }] });
+    const out = await dispatchType({ driver, udid: "U", value: "cat", via: "os", conn: conn as any, verify: true });
+    expect(typed).toEqual(["cat"]);
+    expect(out.note).toMatch(/Not verified: no React Native field holds focus/);
+    expect(conn.seen).toEqual(["read"]);
+  });
+
+  it("types as before when the app cannot say whether anything holds focus", async () => {
+    const { typed, driver } = fakeDriver();
+    const conn = fakeConn({ read: [{ found: true, value: "", focus: { known: false } }, { found: true, value: "cat" }] });
+    const out = await dispatchType({ driver, udid: "U", value: "cat", via: "os", conn: conn as any, verify: true });
+    expect(out.marker).toBe("(input: os/axe)");
+    expect(typed).toEqual(["cat"]);
+  });
+
+  it("says nothing was typed, not that it was corrupted, when the field reads what it read before", async () => {
+    const { driver } = fakeDriver();
+    const conn = fakeConn({ read: [{ found: true, value: "old" }, { found: true, value: "old" }] });
+    await expect(
+      dispatchType({ driver, udid: "U", value: "cat", via: "os", conn: conn as any, verify: true }),
+    ).rejects.toThrow(/Typed "cat" but the field still reads "old" — nothing was typed \(no field had focus\?\)/);
+  });
+
+  it("carries the JS reason into a keyboard-guard error on auto", async () => {
+    const { DriverError } = await import("../../src/core/errors.js");
+    const conn = fakeConn({
+      type: { typed: false, reason: "uncontrolled input — no value prop to drive" },
+      read: [{ found: false, reason: "uncontrolled input — no value prop to read" }],
+    });
+    const driver = {
+      platform: "ios",
+      typeText: async () => {
+        throw new DriverError("Cannot type non-ASCII text with axe.", "Switch the Mac keyboard to ABC.");
+      },
+    } as unknown as DeviceDriver;
+    const err: any = await dispatchType({ driver, udid: "U", value: "é", via: "auto", conn: conn as any, verify: true }).catch(
+      (e) => e,
+    );
+    expect(err).toBeInstanceOf(DriverError);
+    expect(err.message).toBe(
+      "Cannot type non-ASCII text with axe. (The JS path was tried first: uncontrolled input — no value prop to drive.) Switch the Mac keyboard to ABC.",
+    );
   });
 
   it("succeeds and names the JS path when the read-back matches", async () => {
@@ -296,17 +424,18 @@ describe("dispatchType", () => {
 
   it("verifies the OS path too — that is the path that corrupts", async () => {
     const { typed, driver } = fakeDriver();
-    const conn = fakeConn({ read: [{ found: true, value: "ψατ" }] });
+    const conn = fakeConn({ read: [{ found: true, value: "" }, { found: true, value: "ψατ" }] });
     await expect(
       dispatchType({ driver, udid: "U", value: "cat", via: "os", conn: conn as any, verify: true }),
     ).rejects.toThrow(/corrupted in transit/);
     expect(typed).toEqual(["cat"]);
-    expect(conn.seen).toEqual(["read"]); // no JS typing was attempted
+    // The focus/before read, then the read-back; no JS typing was attempted.
+    expect(conn.seen).toEqual(["read", "read"]);
   });
 
   it("accepts an OS read-back that appended to text already in the field", async () => {
     const { driver } = fakeDriver();
-    const conn = fakeConn({ read: [{ found: true, value: "dogcat" }] });
+    const conn = fakeConn({ read: [{ found: true, value: "dog" }, { found: true, value: "dogcat" }] });
     const out = await dispatchType({ driver, udid: "U", value: "cat", via: "os", conn: conn as any, verify: true });
     expect(out.marker).toBe("(input: os/axe)");
     expect(out.note).toMatch(/appended/);
@@ -343,7 +472,7 @@ describe("dispatchType", () => {
     const out = await dispatchType({ driver, udid: "U", value: "cat", via: "auto", conn: conn as any, verify: true });
     expect(out.marker).toBe("(input: os/axe — socket hang up)");
     expect(typed).toEqual(["cat"]);
-    expect(seen).toEqual(["type", "read"]);
+    expect(seen).toEqual(["type", "read", "read"]);
   });
 
   it("via: js surfaces the raw thrown error instead of falling back", async () => {

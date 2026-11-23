@@ -190,7 +190,7 @@ describe("readInputExpression", () => {
       paperFiber({ ...SCREEN, children: [inputChain(props)] }),
       { fabric: false },
     );
-    expect(out).toEqual({ found: true, value: "cat" });
+    expect(out).toEqual({ found: true, value: "cat", focus: { known: false }, inputs: 1 });
   });
 });
 
@@ -268,8 +268,18 @@ describe("scene-aware targeting", () => {
         {
           type: "CardStack",
           children: [
-            { type: "Card", props: { focused: false }, children: [inputChain(field((v) => (under = v)))] },
-            { type: "Card", props: { focused: true }, children: [inputChain(field((v) => (top = v)), LOWER)] },
+            // @react-navigation/stack's CardContainer: focused, plus the scene
+            // it renders (route + descriptor) — a bare focused prop is not a scene.
+            {
+              type: "CardContainer",
+              props: { focused: false, scene: { route: { key: "a" }, descriptor: {} } },
+              children: [inputChain(field((v) => (under = v)))],
+            },
+            {
+              type: "CardContainer",
+              props: { focused: true, scene: { route: { key: "b" }, descriptor: {} } },
+              children: [inputChain(field((v) => (top = v)), LOWER)],
+            },
           ],
         },
       ],
@@ -339,5 +349,91 @@ describe("scene-aware targeting", () => {
       expect(expr).not.toMatch(/=>/);
       expect(expr).not.toMatch(/\b(let|const)\s/);
     }
+  });
+});
+
+describe("typeExpression honours what the field allows", () => {
+  it("refuses a field with editable={false} or readOnly, for good", async () => {
+    let got: string | undefined;
+    const ro = await run(
+      typeExpression({ placeholder: "Email" }, "a@b.c"),
+      fabricFiber({ ...SCREEN, children: [inputChain({ placeholder: "Email", value: "", editable: false, onChangeText: (v: string) => (got = v) })] }),
+    );
+    expect(ro).toMatchObject({ typed: false, definitive: true, reason: 'placeholder "Email" is not editable (editable={false})' });
+    const ro2 = await run(
+      typeExpression(null, "x"),
+      fabricFiber({ ...SCREEN, children: [inputChain({ placeholder: "Code", value: "", readOnly: true, onChangeText: (v: string) => (got = v) })] }),
+    );
+    expect(ro2).toMatchObject({ typed: false, definitive: true, reason: 'placeholder "Code" is not editable (readOnly)' });
+    expect(got).toBeUndefined();
+  });
+
+  it("hands onChangeText no more than maxLength characters, and says so", async () => {
+    let got: string | undefined;
+    const out = await run(
+      typeExpression({ placeholder: "PIN" }, "12345678"),
+      fabricFiber({ ...SCREEN, children: [inputChain({ placeholder: "PIN", value: "", maxLength: 4, onChangeText: (v: string) => (got = v) })] }),
+    );
+    expect(got).toBe("1234");
+    expect(out).toMatchObject({ typed: true, sent: "1234", note: "maxLength 4: typed the first 4 of 8 characters" });
+  });
+});
+
+describe("focus", () => {
+  /** Focus lives on the host's public instance (RN attaches isFocused there). */
+  function withFocus(root: any, focusedIndex: number): any {
+    const hosts: any[] = [];
+    (function walk(f: any) {
+      while (f) {
+        if (f.type === "RCTSinglelineTextInputView") hosts.push(f);
+        walk(f.child);
+        f = f.sibling;
+      }
+    })(root);
+    hosts.forEach((h, i) => (h.stateNode.canonical.publicInstance = { isFocused: () => i === focusedIndex }));
+    return root;
+  }
+
+  it("types into the field holding focus when two are on screen and no target is given", async () => {
+    let a: string | undefined;
+    let b: string | undefined;
+    const root = withFocus(
+      fabricFiber({
+        ...SCREEN,
+        children: [
+          inputChain({ placeholder: "First", value: "", onChangeText: (v: string) => (a = v) }),
+          inputChain({ placeholder: "Second", value: "", onChangeText: (v: string) => (b = v) }, LOWER),
+        ],
+      }),
+      1,
+    );
+    const out = await run(typeExpression(null, "hi"), root);
+    expect(out).toMatchObject({ typed: true, note: "chose the input that holds focus" });
+    expect(b).toBe("hi");
+    expect(a).toBeUndefined();
+  });
+
+  it("reports whether any field holds focus with the value read", async () => {
+    const none = withFocus(fabricFiber({ ...SCREEN, children: [inputChain({ placeholder: "Q", value: "x", onChangeText: () => {} })] }), -1);
+    expect(await run(readInputExpression(null), none)).toMatchObject({ found: true, value: "x", focus: { known: true, any: false } });
+    const one = withFocus(fabricFiber({ ...SCREEN, children: [inputChain({ placeholder: "Q", value: "x", onChangeText: () => {} })] }), 0);
+    expect(await run(readInputExpression(null), one)).toMatchObject({ focus: { known: true, any: true, field: 'placeholder "Q"' } });
+  });
+
+  it("matches into.label against aria-label", async () => {
+    let got: string | undefined;
+    const out = await run(
+      typeExpression({ label: "Search box" }, "cat"),
+      fabricFiber({ ...SCREEN, children: [inputChain({ "aria-label": "Search box", value: "", onChangeText: (v: string) => (got = v) })] }),
+    );
+    expect(out.typed).toBe(true);
+    expect(got).toBe("cat");
+  });
+});
+
+describe("readInputExpression counts the mounted inputs", () => {
+  it("reports zero on a screen with no text input", async () => {
+    const out = await run(readInputExpression(null), fabricFiber({ ...SCREEN, children: [{ type: "RCTText", props: { children: "hi" }, rect: FIELD }] }));
+    expect(out).toMatchObject({ found: false, reason: "no text input is mounted on this screen", inputs: 0 });
   });
 });

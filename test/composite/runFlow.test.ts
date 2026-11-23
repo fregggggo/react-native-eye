@@ -422,3 +422,71 @@ describe("run_flow swipe step", () => {
     expect(out.results[0].input).toBe("(input: os/axe — runner starting)");
   });
 });
+
+describe("run_flow assertions", () => {
+  it("exact:true does not take \"Row 12\" for \"Row 1\"", async () => {
+    await connect();
+    const { driver } = scriptedDriver({ list: [{ text: "Row 12", x: 0, y: 0, w: 100, h: 40 }] }, ["list"]);
+    const loose = await runFlowInternal([{ expect: { text: "Row 1" } }], { drivers: [driver], observe: "none" }, makeDeps());
+    expect(loose.results[0].status).toBe("ok");
+    const exact = await runFlowInternal(
+      [{ expect: { text: "Row 1", exact: true } }],
+      { drivers: [driver], observe: "none" },
+      makeDeps(),
+    );
+    expect(exact.results[0].status).toBe("failed");
+    const not = await runFlowInternal(
+      [{ expect_not: { text: "Row 1", exact: true } }],
+      { drivers: [driver], observe: "none" },
+      makeDeps(),
+    );
+    expect(not.results[0].status).toBe("ok");
+  });
+
+  it("refuses to assert on an app that is not in the foreground", async () => {
+    metro = await startFakeMetro({ port: 0 });
+    metro.setHandler("Runtime.enable", () => ({}));
+    metro.setHandler("Log.enable", () => ({}));
+    metro.setHandler("Runtime.evaluate", (p: any) => {
+      const e = String(p.expression);
+      if (e.includes("rne:appstate")) return { result: { value: JSON.stringify({ s: "ok", v: JSON.stringify({ state: "background" }) }) } };
+      if (e.includes("__REACT_DEVTOOLS_GLOBAL_HOOK__")) {
+        const layout = { available: true, viewport: { x: 0, y: 0, w: 400, h: 800 }, els: [{ text: "Home", x: 0, y: 0, w: 100, h: 40 }] };
+        return { result: { value: JSON.stringify({ s: "ok", v: JSON.stringify(layout) }) } };
+      }
+      return { result: { value: undefined } };
+    });
+    await getRegistry().connect({ port: metro.port });
+    const { driver } = scriptedDriver({ s: [] }, ["s"]);
+    const out = await runFlowInternal([{ expect: { text: "Home" } }], { drivers: [driver], observe: "none" }, makeDeps());
+    expect(out.results[0].status).toBe("failed");
+    expect(out.results[0].detail).toMatch(/not in the foreground \(AppState: background\)/);
+  });
+
+  it("hands the resolved element's label to the tap", async () => {
+    await connect();
+    const { driver } = scriptedDriver({ login: [{ text: "Login", x: 0, y: 0, w: 100, h: 40 }] }, ["login"]);
+    const seen: any[] = [];
+    await runFlowInternal([{ tap: { text: "Log" } }], { drivers: [driver], observe: "none" }, {
+      ...makeDeps(),
+      dispatchTap: async (a) => {
+        seen.push(a.target);
+        return { marker: "(input: js)" };
+      },
+    });
+    expect(seen).toEqual([{ text: "Login" }]);
+  });
+
+  it("refuses a swipe step whose coordinates leave the screen", async () => {
+    await connect();
+    const { driver } = scriptedDriver({ s: [] }, ["s"]);
+    (driver as any).screenSize = async () => ({ w: 400, h: 800 });
+    const out = await runFlowInternal(
+      [{ swipe: { x1: 200, y1: 700, x2: 200, y2: 900 } }],
+      { drivers: [driver], observe: "none" },
+      makeDeps(),
+    );
+    expect(out.results[0].status).toBe("failed");
+    expect(out.results[0].detail).toContain("Swipe point (200, 900) is outside the screen");
+  });
+});

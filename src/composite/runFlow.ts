@@ -1,8 +1,9 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { runtimeContext } from "../tools/context.js";
-import { captureLayout, resolveViewport } from "../tools/layout.js";
-import { resolveTarget } from "../tools/interact.js";
+import { captureLayoutWithSource, resolveViewport } from "../tools/layout.js";
+import { resolveTarget, pressTargetOf, checkOnScreen } from "../tools/interact.js";
+import { backgroundWarning } from "../input/appState.js";
 import { isPresent, type Element } from "../layout/elements.js";
 import { dispatchTap, dispatchType, osMarker, type InputVia } from "../input/dispatch.js";
 import type { InputTarget } from "../input/text.js";
@@ -79,6 +80,15 @@ export async function runFlowInternal(
   // down outright since the last tool call (field test D26).
   await conn.installInterceptors("errors");
 
+  // A fresh look at the screen for an assertion. On an app that is not in the
+  // foreground the JS tree still answers, and an expect would pass on a screen
+  // nobody can see — so the step fails instead, saying why.
+  const freshLayout = async (): Promise<Element[]> => {
+    const c = await captureLayoutWithSource(driver, udid, { conn });
+    if (c.appState) throw new UserInputError(backgroundWarning(c.appState));
+    return c.els;
+  };
+
   const newError = async (): Promise<string | undefined> => {
     // A redbox raised by the app never reaches CDP, so the flow has to ask the
     // app for it — otherwise it keeps stepping through a covered screen and an
@@ -108,9 +118,18 @@ export async function runFlowInternal(
       let interaction = false;
       if (step.tap) {
         const t = step.tap;
-        const { x, y } = await resolveTarget(driver, udid, t, { pre: lastLayout, conn });
+        const { x, y, el } = await resolveTarget(driver, udid, t, { pre: lastLayout, conn });
         lastLayout = undefined;
-        const d = await doTap({ driver, udid, x, y, durationMs: t.duration_ms, via: t.via ?? flowVia, conn });
+        const d = await doTap({
+          driver,
+          udid,
+          x,
+          y,
+          durationMs: t.duration_ms,
+          via: t.via ?? flowVia,
+          conn,
+          target: pressTargetOf(el, t),
+        });
         inputMarker = d.note ? `${d.marker} ${d.note}` : d.marker;
         interaction = true;
       } else if (step.type) {
@@ -136,6 +155,18 @@ export async function runFlowInternal(
         const c = s.direction
           ? swipeVector(s.direction as Direction, await resolveViewport(driver, udid, conn))
           : [s.x1!, s.y1!, s.x2!, s.y2!];
+        if (!s.direction) {
+          await checkOnScreen(
+            driver,
+            udid,
+            conn,
+            [
+              [c[0], c[1]],
+              [c[2], c[3]],
+            ],
+            "Swipe point",
+          );
+        }
         lastLayout = undefined;
         // Straight to the driver on purpose: the step has no `via`, and routing
         // through dispatchSwipe with the flow's via:"auto" would silently turn
@@ -146,7 +177,7 @@ export async function runFlowInternal(
         const timeout = step.wait_for.timeout_ms ?? step.wait_for.timeout ?? 3000;
         const start = now();
         let ok = false;
-        let els = lastLayout ?? (await captureLayout(driver, udid, { conn }));
+        let els = lastLayout ?? (await freshLayout());
         while (true) {
           if (isPresent(els, step.wait_for)) {
             ok = true;
@@ -154,18 +185,18 @@ export async function runFlowInternal(
           }
           if (now() - start >= timeout) break;
           await sleep(50);
-          els = await captureLayout(driver, udid, { conn });
+          els = await freshLayout();
         }
         if (!ok) throw new UserInputError(`wait_for timed out: ${JSON.stringify(step.wait_for)}`);
         lastLayout = els;
       } else if (step.expect) {
-        const els = lastLayout ?? (await captureLayout(driver, udid, { conn }));
+        const els = lastLayout ?? (await freshLayout());
         lastLayout = els;
         if (!isPresent(els, step.expect)) {
           throw new UserInputError(`expect not met: ${JSON.stringify(step.expect)}`);
         }
       } else if (step.expect_not) {
-        const els = lastLayout ?? (await captureLayout(driver, udid, { conn }));
+        const els = lastLayout ?? (await freshLayout());
         lastLayout = els;
         if (isPresent(els, step.expect_not)) {
           throw new UserInputError(`expect_not violated: ${JSON.stringify(step.expect_not)}`);
@@ -224,9 +255,13 @@ export function registerRunFlowTools(server: McpServer, opts?: { drivers?: Devic
         steps: z
           .array(z.record(z.any()))
           .describe(
-            "Array of step objects, one action each, e.g. [{tap:{text:'Login'}},{expect:{text:'Home'}}]",
+            "Array of step objects, one action each (max 20), e.g. [{tap:{text:'Login'}},{expect:{text:'Home'}}]. " +
+              "tap: exactly one of text, testID or x+y (plus duration_ms, via). type: {text, into?, via?}. " +
+              "swipe: direction or x1,y1,x2,y2. wait_for / expect / expect_not: exactly one of text or testID, plus exact:true " +
+              "to match the whole label (default substring); wait_for also takes timeout_ms (default 3000). eval: JS source. " +
+              "settle: ms to wait after a tap/type/swipe/eval step instead of waiting for the screen to settle.",
           ),
-        device: z.string().optional(),
+        device: z.string().optional().describe("Device udid/serial or name substring; default: the connected or only booted device."),
         observe: z
           .enum(["auto", "full", "none"])
           .optional()
@@ -240,6 +275,7 @@ export function registerRunFlowTools(server: McpServer, opts?: { drivers?: Devic
             "Default input path for every tap/type step: js dispatches the press through the app's own fiber tree (~1ms), os delivers a real simulator touch (17-25s against a hot iOS app), auto tries js and falls back naming the reason. A step's own `via` wins. Default auto.",
           ),
       },
+      annotations: { readOnlyHint: false, idempotentHint: false, openWorldHint: false },
     },
     async (input) => {
       try {

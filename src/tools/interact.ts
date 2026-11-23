@@ -2,10 +2,20 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { deviceContext } from "./context.js";
 import { captureLayout, captureLayoutWithSource, resolveViewport, type EvalConn } from "./layout.js";
-import { findByText, findByTestID, isVisible, isPresent, layoutDiff, type Element } from "../layout/elements.js";
+import {
+  findByText,
+  findByTestID,
+  isVisible,
+  layoutDiff,
+  matchingElements,
+  sameElement,
+  type Element,
+} from "../layout/elements.js";
 import { swipeVector, type Direction } from "../layout/gestures.js";
 import { settleLayout } from "../composite/settle.js";
 import { scrollToExpression, type ScrollResult } from "../input/scroll.js";
+import { foregroundGuarded, notForeground } from "../input/appState.js";
+import type { PressTarget } from "../input/press.js";
 import { recordTouch, hotNotice } from "../input/hotState.js";
 import { text } from "../core/format.js";
 import { toToolError, UserInputError, DriverError } from "../core/errors.js";
@@ -25,38 +35,92 @@ import { resolveAppSpace, toAppPoint } from "../layout/appSpace.js";
 
 export type Selector = { text?: string; testID?: string; x?: number; y?: number };
 
+/**
+ * Refuses points outside the screen. A touch there is clamped or dropped by
+ * the OS, and a JS press finds nothing — either way the caller was told
+ * "tapped" about a tap that went nowhere.
+ *
+ * The screen size is the cheap read and settles almost every call. Only a
+ * point outside it (or no size at all) pays for the app's root frame, and the
+ * area is then the union of the two, because each can be wrong alone:
+ * Android's `wm size` stays portrait in landscape, and the root frame can stop
+ * short of the system bars a caller may legitimately touch. Nothing known,
+ * nothing refused.
+ */
+export async function checkOnScreen(
+  driver: DeviceDriver,
+  udid: string,
+  conn: EvalConn | undefined,
+  points: [number, number][],
+  what: string,
+): Promise<void> {
+  const inside = (b: Viewport) => points.every(([x, y]) => x >= b.x && y >= b.y && x <= b.x + b.w && y <= b.y + b.h);
+  const size = driver.screenSize ? await driver.screenSize(udid).catch(() => undefined) : undefined;
+  const rects: Viewport[] = [];
+  if (size && size.w > 0 && size.h > 0) rects.push({ x: 0, y: 0, w: size.w, h: size.h });
+  if (rects.length && inside(rects[0])) return;
+  const vp = conn ? await resolveViewport(driver, udid, conn).catch(() => undefined) : undefined;
+  if (vp && vp.w > 0 && vp.h > 0) rects.push(vp);
+  if (!rects.length) return;
+  const x1 = Math.round(Math.min(...rects.map((r) => r.x)));
+  const y1 = Math.round(Math.min(...rects.map((r) => r.y)));
+  const x2 = Math.round(Math.max(...rects.map((r) => r.x + r.w)));
+  const y2 = Math.round(Math.max(...rects.map((r) => r.y + r.h)));
+  for (const [x, y] of points) {
+    if (x < x1 || y < y1 || x > x2 || y > y2) {
+      throw new UserInputError(
+        `${what} (${x}, ${y}) is outside the screen: x must be ${x1}–${x2} and y ${y1}–${y2} ` +
+          `(${driver.platform === "android" ? "pixels" : "points"}, the units get_layout reports).`,
+      );
+    }
+  }
+}
+
 export async function resolveTarget(
   driver: DeviceDriver,
   udid: string,
   sel: Selector,
   o?: { pre?: Element[]; conn?: EvalConn },
-): Promise<{ x: number; y: number; label: string; before?: Element[] }> {
+): Promise<{ x: number; y: number; label: string; before?: Element[]; el?: Element }> {
   // Explicit coordinates never need a layout capture — on heavy screens
   // `axe describe-ui` can exceed its timeout, which must not break x/y taps.
+  // The bounds check is one cheap read.
   if (typeof sel.x === "number" && typeof sel.y === "number") {
+    await checkOnScreen(driver, udid, o?.conn, [[sel.x, sel.y]], "Tap point");
     return { x: sel.x, y: sel.y, label: `(${sel.x}, ${sel.y})` };
   }
   const before = o?.pre ?? (await captureLayout(driver, udid, { conn: o?.conn }));
   if (sel.testID) {
     const el = findByTestID(before, sel.testID);
     if (!el) throw new UserInputError(`No element with testID "${sel.testID}".`);
-    return { x: el.cx, y: el.cy, label: `testID "${sel.testID}"`, before };
+    return { x: el.cx, y: el.cy, label: `testID "${sel.testID}"`, before, el };
   }
   if (sel.text) {
     const el = findByText(before, sel.text);
-    return { x: el.cx, y: el.cy, label: `"${el.text ?? sel.text}"`, before };
+    return { x: el.cx, y: el.cy, label: `"${el.text ?? sel.text}"`, before, el };
   }
   throw new UserInputError("Provide one of: text, testID, or x+y.");
 }
 
 /**
- * Re-locating a target that was already resolved once — not selector semantics.
- * `resolveScrollTarget` below is the one place a selector is interpreted.
+ * The label a JS press or scroll recognises the resolved element by — the one
+ * the listing showed, so a host painted over it (or under it) cannot be taken
+ * for it.
  */
-function matchesSelector(e: Element, sel: { text?: string; testID?: string }): boolean {
-  if (sel.testID) return e.testID === sel.testID;
-  if (!sel.text) return false;
-  return e.text === sel.text || (e.text ?? "").toLowerCase().includes(sel.text.toLowerCase());
+export function pressTargetOf(el: Element | undefined, sel: { testID?: string }): PressTarget | undefined {
+  if (sel.testID) return { testID: sel.testID };
+  const label = el?.text ?? el?.placeholder;
+  return label ? { text: label } : undefined;
+}
+
+/** What a layout looks like, for telling whether a swipe moved anything at all. */
+function layoutSignature(els: Element[]): string {
+  return els
+    .map(
+      (e) =>
+        `${e.text ?? ""}|${e.testID ?? ""}|${e.placeholder ?? ""}|${Math.round(e.x)},${Math.round(e.y)},${Math.round(e.w)},${Math.round(e.h)}|${e.offscreen ? 1 : 0}${e.hidden ? 1 : 0}`,
+    )
+    .join("\n");
 }
 
 /**
@@ -79,8 +143,13 @@ function resolveScrollTarget(els: Element[], sel: { text?: string; testID?: stri
     if (!(err instanceof UserInputError) || !/is not visible/.test(err.message)) throw err;
     // Only `offscreen` is reachable by scrolling: an element on an inactive tab
     // or behind display:none measures identically and no swipe will reveal it,
-    // so the original refusal — which says to navigate instead — stands.
-    const off = els.filter((e) => e.offscreen && matchesSelector(e, sel));
+    // so the original refusal — which says to navigate instead — stands. The
+    // match is tiered like findByText's: "Row 1" is the row called exactly
+    // that, not "Row 1" and "Row 10"…"Row 19" in one false ambiguity.
+    const off = matchingElements(
+      els.filter((e) => e.offscreen),
+      sel,
+    );
     if (off.length === 1) return off[0];
     if (off.length > 1) {
       throw new UserInputError(
@@ -138,10 +207,10 @@ export async function tapInternal(
   conn?: EvalConn,
   via: InputVia = "auto",
 ): Promise<string> {
-  const { x, y, label, before } = await resolveTarget(driver, udid, sel, { conn });
+  const { x, y, label, before, el } = await resolveTarget(driver, udid, sel, { conn });
   let dispatched: Dispatched;
   try {
-    dispatched = await dispatchTap({ driver, udid, x, y, durationMs, via, conn });
+    dispatched = await dispatchTap({ driver, udid, x, y, durationMs, via, conn, target: pressTargetOf(el, sel) });
   } catch (err) {
     if (err instanceof DriverError && /timed out/i.test(err.message)) {
       await timeoutVerdict(driver, udid, err, before, conn);
@@ -154,9 +223,22 @@ export async function tapInternal(
   const head = `Tapped ${label} @${x},${y}. ${dispatched.marker}`;
   const note = dispatched.note ? `\n${dispatched.note}` : "";
   if (!before) return head + note;
-  const after = await captureLayout(driver, udid, { conn }).catch(() => undefined);
+  let after = await captureLayout(driver, udid, { conn }).catch(() => undefined);
   if (!after) return `${head} (layout unavailable for diff)${note}`;
-  return `${head}\n${layoutDiff(before, after)}${note}`;
+  let diff = layoutDiff(before, after);
+  if (/no visible layout change/i.test(diff)) {
+    // An OS touch reaches JS asynchronously, and on a busy screen the touch-up
+    // lands at the very end of a slow axe call: the read right after it can
+    // come before React commits. One settle (two frames, capped) and a second
+    // read tell "nothing happened" from "not drawn yet"; a tap that did change
+    // something never pays for it.
+    const settled = await settleLayout(driver, udid, { conn, maxMs: 600 });
+    if (settled.length) {
+      after = settled;
+      diff = layoutDiff(before, after);
+    }
+  }
+  return `${head}\n${diff}${note}`;
 }
 
 const JS_SCROLL_TIMEOUT_MS = 15000;
@@ -202,18 +284,20 @@ export async function scrollToInternal(
     // The layout was converted into screen units; the expression hit-tests
     // in the app's own, so the point is converted back by the same rule.
     const p = toAppPoint(el.cx, el.cy, await resolveAppSpace(driver, udid));
-    let result: ScrollResult;
+    let result: ScrollResult & { background?: string };
     try {
-      const raw = await conn.evaluate(scrollToExpression(p.x, p.y), {
+      const raw = await conn.evaluate(foregroundGuarded(scrollToExpression(p.x, p.y, pressTargetOf(el, sel))), {
         timeoutMs: JS_SCROLL_TIMEOUT_MS,
       });
       result = typeof raw === "string" ? JSON.parse(raw) : raw;
     } catch (err) {
       result = { scrolled: false, reason: `js scroll failed: ${err instanceof Error ? err.message : String(err)}` };
     }
+    // Swipes would scroll whatever app is in front instead.
+    if (result && typeof result.background === "string") throw notForeground(result.background, "scroll");
     if (result && result.scrolled) {
       const after = await settleLayout(driver, udid, { conn, maxMs: 600 });
-      const now = after.find((e) => isVisible(e) && matchesSelector(e, sel));
+      const now = after.find((e) => isVisible(e) && sameElement(e, el));
       const head = `Scrolled ${label} via ${result.container}.${result.method}`;
       return finish(
         now
@@ -240,6 +324,7 @@ export async function scrollToInternal(
   const vp = await resolveViewport(driver, udid, conn).catch(() => undefined);
   let target: Element | undefined = el;
   let dir: Direction = directionTo(el, vp);
+  let seen = layoutSignature(captured.els);
   for (let n = 1; n <= maxSwipes; n++) {
     if (target) dir = directionTo(target, vp);
     const [x1, y1, x2, y2] = swipeVector(dir, vp);
@@ -247,12 +332,20 @@ export async function scrollToInternal(
     os = await driver.swipe(udid, x1, y1, x2, y2, 300);
     recordTouch(udid, Date.now() - t0);
     const els = await settleLayout(driver, udid, { conn });
-    if (isPresent(els, sel)) {
-      const now = els.find((e) => isVisible(e) && matchesSelector(e, sel))!;
-      return finish(`Swiped ${dir} ${n}× — ${label} is now visible @${now.cx},${now.cy}.`, osDone());
+    const now = els.find((e) => isVisible(e) && sameElement(e, el));
+    if (now) return finish(`Swiped ${dir} ${n}× — ${label} is now visible @${now.cx},${now.cy}.`, osDone());
+    // Nothing moved: the list is at its end, or the swipe never landed. Either
+    // way the next swipe would cost the same 20 s and change nothing.
+    const sig = layoutSignature(els);
+    if (sig === seen) {
+      return finish(
+        `${label} is not visible, and the screen did not change after swipe ${n} ${dir} — the list is at its end in that direction, or the swipe did not land. Navigate to its screen instead.`,
+        osDone(),
+      );
     }
+    seen = sig;
     // A virtualized row can unmount entirely; keep the last direction if so.
-    target = els.find((e) => matchesSelector(e, sel));
+    target = els.find((e) => sameElement(e, el));
   }
   const last = target
     ? ` Its last known position was @${target.cx},${target.cy}`
@@ -273,14 +366,26 @@ export function registerInteractionTools(server: McpServer, opts?: { drivers?: D
       description:
         "Tap an element by text, testID, or x+y coordinates. Pass duration_ms for a long press. via picks the delivery path (js = call the component's own press handler through the app runtime, os = a real simulator/device touch, default auto). Returns the coordinates tapped, the path used, and what changed on screen.",
       inputSchema: {
-        text: z.string().optional(),
-        testID: z.string().optional(),
-        x: z.number().optional(),
-        y: z.number().optional(),
-        duration_ms: z.number().int().positive().optional(),
-        via: z.enum(["js", "os", "auto"]).optional(),
-        device: z.string().optional(),
+        text: z
+          .string()
+          .optional()
+          .describe("Visible label (or accessibility label) of the element; exact match first, then substring. Refused when ambiguous."),
+        testID: z.string().optional().describe("The element's testID — the most precise selector."),
+        x: z.number().optional().describe("X coordinate in screen units (points on iOS, pixels on Android), with y."),
+        y: z.number().optional().describe("Y coordinate in screen units, with x."),
+        duration_ms: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("Hold time; 500 or more is a long press (calls onLongPress on the JS path)."),
+        via: z
+          .enum(["js", "os", "auto"])
+          .optional()
+          .describe("Delivery path: js = the component's own handler through the app runtime, os = a real touch, auto (default) = js, then os."),
+        device: z.string().optional().describe("Device udid/serial or name substring; default: the connected or only booted device."),
       },
+      annotations: { readOnlyHint: false, idempotentHint: false, openWorldHint: false },
     },
     async ({ duration_ms, device, via, ...sel }) => {
       try {
@@ -299,15 +404,22 @@ export function registerInteractionTools(server: McpServer, opts?: { drivers?: D
       description:
         "Swipe in a direction (scaled to the screen), or between explicit coordinates. via picks the delivery path: js scrolls the container under the start point by the same distance through the app runtime (no touch), os is a real simulator/device gesture, auto (default) tries js and names the reason when it falls back.",
       inputSchema: {
-        direction: z.enum(["up", "down", "left", "right"]).optional(),
-        x1: z.number().optional(),
-        y1: z.number().optional(),
-        x2: z.number().optional(),
-        y2: z.number().optional(),
-        duration_ms: z.number().int().positive().optional(),
-        via: z.enum(["js", "os", "auto"]).optional(),
-        device: z.string().optional(),
+        direction: z
+          .enum(["up", "down", "left", "right"])
+          .optional()
+          .describe("Finger direction: up reveals what is below. Scaled to the screen. Or give x1,y1,x2,y2."),
+        x1: z.number().optional().describe("Start x in screen units (points on iOS, pixels on Android)."),
+        y1: z.number().optional().describe("Start y in screen units."),
+        x2: z.number().optional().describe("End x in screen units."),
+        y2: z.number().optional().describe("End y in screen units."),
+        duration_ms: z.number().int().positive().optional().describe("Gesture duration on the OS path (default 300)."),
+        via: z
+          .enum(["js", "os", "auto"])
+          .optional()
+          .describe("js = scroll the container under the start point by the same distance (no touch), os = a real gesture, auto (default) = js, then os."),
+        device: z.string().optional().describe("Device udid/serial or name substring; default: the connected or only booted device."),
       },
+      annotations: { readOnlyHint: false, idempotentHint: false, openWorldHint: false },
     },
     async ({ direction, x1, y1, x2, y2, duration_ms, via, device }) => {
       try {
@@ -317,6 +429,16 @@ export function registerInteractionTools(server: McpServer, opts?: { drivers?: D
           coords = swipeVector(direction as Direction, await resolveViewport(driver, udid, conn));
         } else if ([x1, y1, x2, y2].every((n) => typeof n === "number")) {
           coords = [x1!, y1!, x2!, y2!];
+          await checkOnScreen(
+            driver,
+            udid,
+            conn,
+            [
+              [x1!, y1!],
+              [x2!, y2!],
+            ],
+            "Swipe point",
+          );
         } else {
           throw new UserInputError("Provide a direction or x1,y1,x2,y2.");
         }
@@ -351,13 +473,23 @@ export function registerInteractionTools(server: McpServer, opts?: { drivers?: D
       description:
         "Bring an off-screen element into view. Returns immediately when it is already visible. via: js asks the element's own scroll container to jump to it (no touch, no swipe); os swipes toward it and re-reads the layout after each swipe, stopping as soon as it appears; auto (default) tries js and names the reason when it falls back.",
       inputSchema: {
-        text: z.string().optional(),
-        testID: z.string().optional(),
-        via: z.enum(["js", "os", "auto"]).optional(),
+        text: z.string().optional().describe("Label of the element to reveal; exact match first, then substring."),
+        testID: z.string().optional().describe("testID of the element to reveal."),
+        via: z
+          .enum(["js", "os", "auto"])
+          .optional()
+          .describe("js = the element's own scroll container jumps to it, os = swipe toward it, auto (default) = js, then os."),
         // At 17-25s per touch on a hot app, 30 swipes is already ten minutes.
-        max_swipes: z.number().int().positive().max(30).optional(),
-        device: z.string().optional(),
+        max_swipes: z
+          .number()
+          .int()
+          .positive()
+          .max(30)
+          .optional()
+          .describe("Most swipes on the OS path (default 10). It also stops when a swipe changes nothing."),
+        device: z.string().optional().describe("Device udid/serial or name substring; default: the connected or only booted device."),
       },
+      annotations: { readOnlyHint: false, openWorldHint: false },
     },
     async ({ text: t, testID, via, max_swipes, device }) => {
       try {
@@ -378,20 +510,25 @@ export function registerInteractionTools(server: McpServer, opts?: { drivers?: D
       description:
         'Type text into a text input. `into` selects the field by testID, placeholder or accessibilityLabel — omit it only when a single input is on screen. via "js" (default via "auto" tries it first) calls the field\'s own onChangeText in ~1ms and runs the app\'s real onChange pipeline; via "os" drives the simulator keyboard. verify (default true) reads the value back afterwards and fails loudly if it differs — the OS keyboard sends positional keycodes that a non-ASCII host keyboard layout silently rewrites.',
       inputSchema: {
-        text: z.string(),
+        text: z.string().describe("The text to type. The JS path replaces the field's value; the OS keyboard appends to it."),
         into: z
           .object({
-            testID: z.string().optional(),
-            placeholder: z.string().optional(),
-            label: z.string().optional(),
+            testID: z.string().optional().describe("The field's testID."),
+            placeholder: z.string().optional().describe("The field's placeholder, exactly."),
+            label: z.string().optional().describe("The field's accessibilityLabel / aria-label, exactly."),
           })
           .strict()
-          .optional(),
-        via: z.enum(["js", "os", "auto"]).optional(),
-        verify: z.boolean().optional(),
-        submit: z.boolean().optional(),
-        device: z.string().optional(),
+          .optional()
+          .describe("Which field (JS path only). Omit when one field is on screen or one holds focus."),
+        via: z
+          .enum(["js", "os", "auto"])
+          .optional()
+          .describe("js = the field's own onChangeText, os = the device keyboard into the focused field, auto (default) = js, then os."),
+        verify: z.boolean().optional().describe("Read the value back afterwards and fail if it is wrong (default true)."),
+        submit: z.boolean().optional().describe("Then fire the field's onSubmitEditing, as the return key would."),
+        device: z.string().optional().describe("Device udid/serial or name substring; default: the connected or only booted device."),
       },
+      annotations: { readOnlyHint: false, idempotentHint: false, openWorldHint: false },
     },
     async ({ text: t, into, via, verify, submit, device }) => {
       try {
@@ -440,18 +577,25 @@ export function registerInteractionTools(server: McpServer, opts?: { drivers?: D
       description:
         'Press a hardware key. "back" goes up one screen — via "js" (tried first by default) calls the navigation container\'s own goBack() with no touch, via "os" uses the hardware key (Android) or an edge swipe (iOS). "home" is OS-only. "enter" submits a text field by firing its own onSubmitEditing, the only route to a submit handler that does not need the OS keyboard — pass `into` to name the field when more than one is on screen and none holds focus.',
       inputSchema: {
-        key: z.enum(["back", "home", "enter"]),
+        key: z
+          .enum(["back", "home", "enter"])
+          .describe("back = up one screen, home = background the app (OS only), enter = submit a text field (JS only)."),
         into: z
           .object({
-            testID: z.string().optional(),
-            placeholder: z.string().optional(),
-            label: z.string().optional(),
+            testID: z.string().optional().describe("The field's testID."),
+            placeholder: z.string().optional().describe("The field's placeholder, exactly."),
+            label: z.string().optional().describe("The field's accessibilityLabel / aria-label, exactly."),
           })
           .strict()
-          .optional(),
-        via: z.enum(["js", "os", "auto"]).optional(),
-        device: z.string().optional(),
+          .optional()
+          .describe('key: "enter" only — the field to submit, when more than one is on screen and none holds focus.'),
+        via: z
+          .enum(["js", "os", "auto"])
+          .optional()
+          .describe("back: js = the navigator's goBack(), os = hardware key / edge swipe, auto (default) = js, then os."),
+        device: z.string().optional().describe("Device udid/serial or name substring; default: the connected or only booted device."),
       },
+      annotations: { readOnlyHint: false, idempotentHint: false, openWorldHint: false },
     },
     async ({ key, into, via, device }) => {
       try {

@@ -73,20 +73,57 @@ const stepSchema = z
         // .refine() — see the swipe step for why the order matters.
         timeout: z.number().optional(),
         timeout_ms: z.number().optional(),
+        exact: z.boolean().optional(),
       })
       .strict()
       .refine((w) => w.timeout === undefined || w.timeout_ms === undefined, {
         message: "wait_for takes either timeout_ms or timeout, not both.",
       })
       .optional(),
-    expect: z.object({ text: z.string().optional(), testID: z.string().optional() }).strict().optional(),
-    expect_not: z.object({ text: z.string().optional(), testID: z.string().optional() }).strict().optional(),
+    // `exact`: the whole label, not a substring of it — "Row 1" is not "Row 12".
+    expect: z
+      .object({ text: z.string().optional(), testID: z.string().optional(), exact: z.boolean().optional() })
+      .strict()
+      .optional(),
+    expect_not: z
+      .object({ text: z.string().optional(), testID: z.string().optional(), exact: z.boolean().optional() })
+      .strict()
+      .optional(),
     eval: z.string().optional(),
     settle: z.number().optional(),
   })
   .strict();
 
 export const ACTION_KEYS = ["tap", "type", "swipe", "wait_for", "expect", "expect_not", "eval"] as const;
+
+/** The actions after which the runner settles — the only ones `settle` changes anything for. */
+const INTERACTIONS = ["tap", "type", "swipe", "eval"];
+
+const nonEmpty = (v: unknown): boolean => typeof v === "string" && v.length > 0;
+
+/**
+ * Exactly one selector, and a usable one. `{expect_not: {}}` passed vacuously
+ * (nothing matches nothing), `{tap: {text: ""}}` matched every label by
+ * substring, and `{tap: {text, testID}}` silently used one and ignored the
+ * other.
+ */
+function selectorProblem(key: string, sel: Record<string, unknown>): string | undefined {
+  const hasX = sel.x !== undefined;
+  const hasY = sel.y !== undefined;
+  if (key === "tap" && hasX !== hasY) return "tap needs both x and y";
+  const given = [
+    nonEmpty(sel.text) && "text",
+    nonEmpty(sel.testID) && "testID",
+    key === "tap" && hasX && hasY && "x+y",
+  ].filter((g): g is string => !!g);
+  const allowed = key === "tap" ? "text, testID, or x+y" : "text or testID";
+  if ((sel.text !== undefined && !nonEmpty(sel.text)) || (sel.testID !== undefined && !nonEmpty(sel.testID))) {
+    return `${key} has an empty selector — give one non-empty ${allowed}`;
+  }
+  if (given.length === 0) return `${key} needs a selector: one of ${allowed}`;
+  if (given.length > 1) return `${key} has ${given.length} selectors (${given.join(", ")}) — give exactly one of ${allowed}`;
+  return undefined;
+}
 
 export type FlowStep = z.infer<typeof stepSchema>;
 
@@ -120,6 +157,16 @@ export function parseFlowInput(input: unknown): ParsedFlow {
       throw new UserInputError(
         `Step ${i + 1} has ${keys.length} actions (${keys.join(", ")}). Split it into separate steps — one action each.`,
       );
+    }
+    const key = keys[0];
+    if (step.settle !== undefined && !INTERACTIONS.includes(key)) {
+      throw new UserInputError(
+        `Step ${i + 1}: settle only applies after ${INTERACTIONS.join(", ")} — a ${key} step does not wait on it, so it would be ignored. Remove it.`,
+      );
+    }
+    if (key === "tap" || key === "wait_for" || key === "expect" || key === "expect_not") {
+      const problem = selectorProblem(key, (step as Record<string, Record<string, unknown>>)[key]);
+      if (problem) throw new UserInputError(`Step ${i + 1}: ${problem}.`);
     }
   });
   return { steps: parsed.data.steps, via: parsed.data.via };

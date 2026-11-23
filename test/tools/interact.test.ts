@@ -111,6 +111,26 @@ describe("tap reporting", () => {
     expect(res.content[0].text).toMatch(/Tapped "Login" @50,20\./);
   });
 
+  it("reads the layout again when the change is drawn only after the touch returns", async () => {
+    // axe on a busy screen: the touch-up lands at the end of the call, and
+    // React commits after the first read.
+    getRegistry().reset();
+    const { driver } = driverThatChangesAfterTap();
+    let reads = 0;
+    const lagging: DeviceDriver = {
+      ...driver,
+      rawLayout: async () => {
+        reads++;
+        return axeLayout(reads <= 2 ? [{ text: "Login", x: 0, y: 0, w: 100, h: 40 }] : [{ text: "Welcome", x: 0, y: 0, w: 100, h: 40 }]);
+      },
+    };
+    const server = makeServer();
+    registerInteractionTools(server, { drivers: [lagging] });
+    const res = await callTool(server, "tap", { text: "Login" });
+    expect(res.content[0].text).toContain("+ Welcome");
+    expect(res.content[0].text).not.toMatch(/no visible layout change/);
+  });
+
   it("works without a Metro connection (device access needs no debugger)", async () => {
     getRegistry().reset();
     const { driver, taps } = driverThatChangesAfterTap();
@@ -212,7 +232,8 @@ describe("scroll_to", () => {
           { text: "Header", x: 0, y: 0, w: 400, h: 40 },
           visible({ swipes: swipes.length, layouts: layouts++ })
             ? { text: "Row 42", x: 0, y: 300, w: 400, h: 40 }
-            : { text: "Row 42", x: 0, y: 2400, w: 400, h: 40, offscreen: true },
+            : // Each swipe moves the list: scroll_to stops once a swipe changes nothing.
+              { text: "Row 42", x: 0, y: 2400 - swipes.length * 100, w: 400, h: 40, offscreen: true },
         ]),
       tapXY: async () => AXE,
       swipe: async (_u: string, x1: number, y1: number, x2: number, y2: number) => {
@@ -270,6 +291,65 @@ describe("scroll_to", () => {
     const res = await callTool(server, "scroll_to", { text: "Row 42", via: "os", max_swipes: 3 });
     expect(swipes).toHaveLength(3);
     expect(res.content[0].text).toMatch(/never became visible after 3 swipes/);
+  });
+
+  it("stops as soon as a swipe changes nothing instead of spending max_swipes", async () => {
+    await connect();
+    const swipes: number[][] = [];
+    const still = {
+      platform: "ios" as const,
+      listDevices: async () => [{ platform: "ios", udid: "u", name: "n", booted: true }],
+      screenshotPng: async () => Buffer.from(""),
+      screenSize: async () => ({ w: 400, h: 800 }),
+      rawLayout: async () =>
+        axeLayout([
+          { text: "Header", x: 0, y: 0, w: 400, h: 40 },
+          { text: "Row 42", x: 0, y: 2400, w: 400, h: 40, offscreen: true },
+        ]),
+      swipe: async (_u: string, x1: number, y1: number, x2: number, y2: number) => {
+        swipes.push([x1, y1, x2, y2]);
+        return AXE;
+      },
+    } as any as DeviceDriver;
+    const server = makeServer();
+    registerInteractionTools(server, { drivers: [still] });
+    const res = await callTool(server, "scroll_to", { text: "Row 42", via: "os", max_swipes: 10 });
+    expect(swipes).toHaveLength(1);
+    expect(res.content[0].text).toMatch(/the screen did not change after swipe 1 up/);
+  });
+
+  it("does not take a visible \"Row 12\" for the off-screen \"Row 1\" it was asked for", async () => {
+    await connect();
+    let swiped = 0;
+    const rows = {
+      platform: "ios" as const,
+      listDevices: async () => [{ platform: "ios", udid: "u", name: "n", booted: true }],
+      screenshotPng: async () => Buffer.from(""),
+      screenSize: async () => ({ w: 400, h: 800 }),
+      rawLayout: async () =>
+        axeLayout(
+          swiped === 0
+            ? [
+                { text: "Row 12", x: 0, y: 300, w: 400, h: 40 },
+                { text: "Row 1", x: 0, y: -400, w: 400, h: 40, offscreen: true },
+                { text: "Row 10", x: 0, y: -300, w: 400, h: 40, offscreen: true },
+              ]
+            : [
+                { text: "Row 1", x: 0, y: 100, w: 400, h: 40 },
+                { text: "Row 12", x: 0, y: 1500, w: 400, h: 40, offscreen: true },
+              ],
+        ),
+      swipe: async () => {
+        swiped++;
+        return AXE;
+      },
+    } as any as DeviceDriver;
+    const server = makeServer();
+    registerInteractionTools(server, { drivers: [rows] });
+    const res = await callTool(server, "scroll_to", { text: "Row 1", via: "os" });
+    // Not "Ambiguous target — 2 off-screen elements" (Row 1 and Row 10), and
+    // not "already visible" because Row 12 contains "Row 1".
+    expect(res.content[0].text).toContain('Swiped down 1× — "Row 1" is now visible @200,120.');
   });
 
   it("uses the JS path when it works, and never swipes", async () => {
@@ -404,6 +484,86 @@ describe("swipe", () => {
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toMatch(/no scroll container under 200,600/);
     expect(swipes).toHaveLength(0);
+  });
+});
+
+describe("coordinates outside the screen", () => {
+  it("refuses a tap point past the screen edge and names the valid range", async () => {
+    await connect();
+    const { driver, taps } = driverThatChangesAfterTap();
+    (driver as any).screenSize = async () => ({ w: 402, h: 874 });
+    const server = makeServer();
+    registerInteractionTools(server, { drivers: [driver] });
+    const res = await callTool(server, "tap", { x: 220, y: 908 });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("Tap point (220, 908) is outside the screen: x must be 0–402 and y 0–874 (points");
+    expect(taps).toEqual([]);
+  });
+
+  it("refuses a swipe whose end point is off the screen", async () => {
+    await connect();
+    const swipes: number[][] = [];
+    const driver = {
+      platform: "android" as const,
+      listDevices: async () => [{ platform: "android", udid: "u", name: "n", booted: true }],
+      screenSize: async () => ({ w: 1080, h: 2400 }),
+      swipe: async (_u: string, ...c: number[]) => (swipes.push(c), { path: "adb" }),
+    } as any as DeviceDriver;
+    const server = makeServer();
+    registerInteractionTools(server, { drivers: [driver] });
+    const res = await callTool(server, "swipe", { x1: 540, y1: 2000, x2: 540, y2: -50, via: "os" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("Swipe point (540, -50) is outside the screen: x must be 0–1080 and y 0–2400 (pixels");
+    expect(swipes).toEqual([]);
+  });
+
+  it("allows a point on the app's root frame where the screen size reads portrait in landscape", async () => {
+    // Android's wm size stays 1080x2400 in landscape; the JS root frame says
+    // 2400 wide. The union of the two is the area a point can be on.
+    metro = await startFakeMetro({ port: 0 });
+    metro.setHandler("Runtime.enable", () => ({}));
+    metro.setHandler("Log.enable", () => ({}));
+    metro.setHandler("Runtime.evaluate", (p: any) =>
+      String(p.expression).includes("__REACT_DEVTOOLS_GLOBAL_HOOK__") && !String(p.expression).includes("PX =")
+        ? evalEnvelope(JSON.stringify({ x: 0, y: 0, w: 2400, h: 1080 }))
+        : evalEnvelope(undefined),
+    );
+    await getRegistry().connect({ port: metro.port });
+    const taps: number[][] = [];
+    const driver = {
+      platform: "android" as const,
+      listDevices: async () => [{ platform: "android", udid: "u", name: "n", booted: true }],
+      screenSize: async () => ({ w: 1080, h: 2400 }),
+      tapXY: async (_u: string, x: number, y: number) => (taps.push([x, y]), { path: "adb" }),
+    } as any as DeviceDriver;
+    const server = makeServer();
+    registerInteractionTools(server, { drivers: [driver] });
+    const res = await callTool(server, "tap", { x: 2000, y: 500, via: "os" });
+    expect(res.isError).toBeFalsy();
+    expect(taps).toEqual([[2000, 500]]);
+  });
+});
+
+describe("tap names the element it resolved", () => {
+  it("hands the resolved label to the JS press so an overlapping element cannot take the tap", async () => {
+    const exprs: string[] = [];
+    metro = await startFakeMetro({ port: 0 });
+    metro.setHandler("Runtime.enable", () => ({}));
+    metro.setHandler("Log.enable", () => ({}));
+    metro.setHandler("Runtime.evaluate", (p: any) => {
+      const e = String(p.expression);
+      exprs.push(e);
+      return e.includes("WANT_LONG")
+        ? evalEnvelope(JSON.stringify({ pressed: true, component: "Pressable", handler: "onPress", depth: 1 }))
+        : evalEnvelope(undefined);
+    });
+    await getRegistry().connect({ port: metro.port });
+    const { driver } = driverThatChangesAfterTap();
+    const server = makeServer();
+    registerInteractionTools(server, { drivers: [driver] });
+    await callTool(server, "tap", { text: "Log" });
+    const press = exprs.find((e) => e.includes("WANT_LONG"))!;
+    expect(press).toContain('TARGET = {\\"text\\":\\"Login\\"}');
   });
 });
 

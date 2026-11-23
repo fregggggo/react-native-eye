@@ -15,11 +15,11 @@ async function press(
   root: any,
   x: number,
   y: number,
-  opts?: { longPress?: boolean; fabric?: boolean },
+  opts?: { longPress?: boolean; fabric?: boolean; target?: { testID?: string; text?: string } },
 ): Promise<any> {
   const runtime = makeRuntime(hookGlobals(linkParents(root), { fabric: opts?.fabric !== false }));
   const conn = new Connection(fakeClient(runtime) as any, { port: 0, targetId: "t", title: "fake" });
-  return JSON.parse(await conn.evaluate(pressExpression(x, y, { longPress: opts?.longPress })));
+  return JSON.parse(await conn.evaluate(pressExpression(x, y, { longPress: opts?.longPress, target: opts?.target })));
 }
 
 /** Pressable is a forwardRef: its fiber.type is an object carrying displayName, not a tag string. */
@@ -65,7 +65,7 @@ describe("pressExpression", () => {
     expect(calls).toEqual(["press"]);
   });
 
-  it("picks the smallest element containing the point when two overlap", async () => {
+  it("picks the innermost element containing the point when two are nested", async () => {
     // Paper: measurement arrives on a callback, so this case also covers the
     // promise settle path and proves the press is dispatched once, not per resolve.
     const calls: string[] = [];
@@ -264,5 +264,77 @@ describe("pressExpression", () => {
     const out = await press(tree, 50, 50);
     expect(out).toMatchObject({ pressed: true, component: "RCTView", handler: "onPress" });
     expect(calls).toEqual(["visible"]);
+  });
+
+  describe("overlapping elements", () => {
+    // A list row whose label sits under a bottom sheet's Confirm button: the
+    // label is smaller, and the sheet is painted later (it comes later in the
+    // tree). Smallest-area used to press the row under the sheet.
+    function sheetOverRow(calls: string[], sheetProps: Record<string, unknown> = {}) {
+      return fabricFiber({
+        ...SCREEN,
+        children: [
+          {
+            type: "RCTView",
+            props: { onClick: () => calls.push("row 12") },
+            rect: { x: 0, y: 600, w: 400, h: 60 },
+            children: [{ type: "RCTText", props: { children: "Row 12" }, rect: { x: 170, y: 620, w: 60, h: 20 } }],
+          },
+          {
+            type: "RCTView",
+            props: sheetProps,
+            rect: { x: 0, y: 500, w: 400, h: 300 },
+            children: [
+              {
+                type: "RCTView",
+                props: { onClick: () => calls.push("confirm") },
+                rect: { x: 20, y: 600, w: 360, h: 60 },
+                children: [{ type: "RCTText", props: { children: "Confirm" }, rect: { x: 150, y: 618, w: 100, h: 24 } }],
+              },
+            ],
+          },
+        ],
+      });
+    }
+
+    it("presses what is painted on top, not the smaller element underneath", async () => {
+      const calls: string[] = [];
+      const out = await press(sheetOverRow(calls), 200, 630);
+      expect(out.pressed).toBe(true);
+      expect(calls).toEqual(["confirm"]);
+    });
+
+    it("presses the element the selector named even where another one is painted over it", async () => {
+      const calls: string[] = [];
+      const out = await press(sheetOverRow(calls), 200, 630, { target: { text: "Row 12" } });
+      expect(out.pressed).toBe(true);
+      expect(calls).toEqual(["row 12"]);
+    });
+
+    it("lets touches through a pointerEvents:none overlay and a box-none container", async () => {
+      const calls: string[] = [];
+      const none = await press(sheetOverRow(calls, { pointerEvents: "none" }), 200, 630);
+      expect(none.pressed).toBe(true);
+      expect(calls).toEqual(["row 12"]);
+      calls.length = 0;
+      // box-none: the container itself is transparent to touches, its button is not.
+      const boxNone = await press(sheetOverRow(calls, { style: { pointerEvents: "box-none" } }), 200, 630);
+      expect(boxNone.pressed).toBe(true);
+      expect(calls).toEqual(["confirm"]);
+    });
+
+    it("matches the named element by testID or accessibility label", async () => {
+      const calls: string[] = [];
+      const tree = fabricFiber({
+        ...SCREEN,
+        children: [
+          { type: "RCTView", props: { testID: "under", onClick: () => calls.push("under") }, rect: { x: 0, y: 0, w: 100, h: 100 } },
+          { type: "RCTView", props: { accessibilityLabel: "Close", onClick: () => calls.push("close") }, rect: { x: 0, y: 0, w: 100, h: 100 } },
+        ],
+      });
+      await press(tree, 50, 50, { target: { testID: "under" } });
+      await press(tree, 50, 50, { target: { text: "Close" } });
+      expect(calls).toEqual(["under", "close"]);
+    });
   });
 });

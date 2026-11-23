@@ -2,6 +2,7 @@
 // (Hermes): no let/const, no arrow functions, no template literals. Kept in its
 // own file rather than inside text.ts so press.ts and scroll.ts can rank their
 // own targets by the same rule when they need it.
+import { NAV_SCENE } from "../layout/runtimeSnippets.js";
 
 /**
  * `function sceneRank(fiber)` — walks `fiber.return` upward to the nearest
@@ -33,7 +34,7 @@
  * Requires `safe()` (see `SAFE` in `src/layout/runtimeSnippets.ts`) to be in
  * scope at the point of interpolation.
  */
-export const SCENE_RANK = `
+export const SCENE_RANK = `${NAV_SCENE}
     // 2 = on top, 1 = mounted below the top, 0 = detached. Returns null when the
     // fiber says nothing about navigation at all.
     function sceneState(p) {
@@ -44,9 +45,10 @@ export const SCENE_RANK = `
       // pass an "active" 0/1 prop instead, where 1 is the screen on top.
       var b = safe(function () { return p.active; });
       if (typeof b === "number") return b === 0 ? 0 : 2;
-      // react-navigation's JS stack and tab scene wrappers.
+      // react-navigation's JS stack and tab scene wrappers — on a scene only:
+      // a tab button or an input wrapper says focused:false while on screen.
       var f = safe(function () { return p.focused; });
-      if (typeof f === "boolean") return f ? 2 : 1;
+      if (typeof f === "boolean" && navScene(p)) return f ? 2 : 1;
       // A pager scene knows its own index and the navigator's current one.
       var i = safe(function () { return p.index; });
       var n = safe(function () { return p.navigationState && p.navigationState.index; });

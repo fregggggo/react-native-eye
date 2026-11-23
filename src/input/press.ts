@@ -12,7 +12,7 @@
 // ambiguity refusals, and handed over a point. Re-deriving any of that in ES5
 // would give `via: "js"` different selector semantics from `via: "os"`, which is
 // worse than the bug being fixed.
-import { SAFE, MEASURER, VISIBILITY } from "../layout/runtimeSnippets.js";
+import { SAFE, MEASURER, VISIBILITY, TEXT_FROM, A11Y_LABEL, IS_TARGET, STYLE_PROPS, jsLiteral } from "../layout/runtimeSnippets.js";
 
 export type PressResult =
   | { pressed: true; component: string; handler: "onPress" | "onLongPress" | "onClick"; depth: number }
@@ -25,7 +25,19 @@ export type PressResult =
  */
 const MAX_CLIMB = 30;
 
-export function pressExpression(x: number, y: number, opts?: { longPress?: boolean }): string {
+/**
+ * The element a selector resolved to, by the label the layout listed it under.
+ * With it the hit test presses that element even where another one overlaps
+ * the point; without it (a bare x/y tap) the topmost host under the point wins.
+ */
+export type PressTarget = { testID?: string; text?: string };
+
+export function pressExpression(
+  x: number,
+  y: number,
+  opts?: { longPress?: boolean; target?: PressTarget },
+): string {
+  const target = opts?.target && (opts.target.testID || opts.target.text) ? opts.target : null;
   return `(function () {
     var hook = globalThis.__REACT_DEVTOOLS_GLOBAL_HOOK__;
     if (!hook || !hook.renderers || !hook.getFiberRoots) {
@@ -35,11 +47,16 @@ export function pressExpression(x: number, y: number, opts?: { longPress?: boole
     var PX = ${Number(x)}, PY = ${Number(y)};
     var WANT_LONG = ${opts?.longPress ? "true" : "false"};
     var MAX_CLIMB = ${MAX_CLIMB};
+    var TARGET = ${jsLiteral(target)};
     var hosts = [];
 
     ${SAFE}
     ${MEASURER}
     ${VISIBILITY}
+    ${TEXT_FROM}
+    ${A11Y_LABEL}
+    ${IS_TARGET}
+    ${STYLE_PROPS}
 
     // Every measurable host is a candidate, not just the ones fastLayout keeps:
     // the element under the point is often an unlabelled view with no testID.
@@ -54,11 +71,15 @@ export function pressExpression(x: number, y: number, opts?: { longPress?: boole
     function walk(fiber, hidden) {
       while (fiber) {
         var hiddenHere = hidden || hidesSubtree(fiber);
-        if (!hiddenHere) {
+        var pe = pointerEventsOf(safe(function () { return fiber.memoizedProps; }));
+        if (pe === "none") hiddenHere = true;
+        if (!hiddenHere && pe !== "box-none") {
           var m = safe(function () { return measurer(fiber.stateNode); });
           if (m) hosts.push({ m: m, fiber: fiber });
         }
-        walk(fiber.child, hiddenHere);
+        // box-only: the view takes the touch for its children, which are
+        // inside its frame anyway — leaving them out makes the view the hit.
+        walk(fiber.child, hiddenHere || pe === "box-only");
         fiber = fiber.sibling;
       }
     }
@@ -97,21 +118,24 @@ export function pressExpression(x: number, y: number, opts?: { longPress?: boole
       return safe(function () { return t.displayName; }) || safe(function () { return t.name; }) || "Unknown";
     }
 
-    // elementAtPoint's rule, reproduced: the smallest-area frame containing the
-    // point wins, and a later fiber wins a tie because tree order is paint order.
+    // Hosts are collected in pre-order, which is paint order: a later host is
+    // either inside an earlier one or in a subtree painted over it. So the last
+    // host whose frame contains the point is the one on top — a bottom sheet's
+    // button, not the smaller list label it is drawn over (smallest-area, the
+    // old rule, picked the label). When the caller named the element, a host
+    // carrying that label wins outright; the point only picks which copy.
     // No viewport clipping here — the point came from a layout that already
-    // clipped, so it lies inside the raw frame too, and an element wider than the
-    // screen can never be the smallest anyway.
+    // clipped, so it lies inside the raw frame too.
     function hitIndex() {
-      var best = -1, bestArea = 0;
+      var best = -1, named = -1;
       for (var i = 0; i < out.length; i++) {
         var r = out[i];
         if (!r || !(r.w > 0) || !(r.h > 0)) continue;
         if (PX < r.x || PX > r.x + r.w || PY < r.y || PY > r.y + r.h) continue;
-        var area = r.w * r.h;
-        if (best < 0 || area <= bestArea) { best = i; bestArea = area; }
+        best = i;
+        if (TARGET && isTarget(safe(function () { return hosts[i].fiber.memoizedProps; }), TARGET)) named = i;
       }
-      return best;
+      return named >= 0 ? named : best;
     }
 
     // One pass per preference class, not one preference order per fiber: a
