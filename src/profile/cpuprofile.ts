@@ -65,13 +65,31 @@ export type ProfileSummary = {
 
 const IDLE_FRAME = "(idle)";
 const GC_FRAME = "(garbage collector)";
+/**
+ * Hermes in RN 0.83 names its synthetic frames in brackets instead: `[root]`,
+ * `[GC Young Gen]` (url `[suspended]`), `[Native] weakMapPrototypeSet` (url
+ * `[native]`). It has no idle frame — a sample taken while the thread waits on
+ * the event loop lands on `[root]` itself (167 of 169 samples on an idle app),
+ * so self time on `[root]` is idle time, not work.
+ */
+const BRACKET_ROOT_FRAME = "[root]";
+const BRACKET_GC_FRAME = /^\[GC\b/;
 
 /**
  * Frames the VM synthesises. They answer a different question than the function
  * tables do — "was the JS thread busy at all" — so they are reported as one
  * busy/idle/GC block and never as rows a user could go and optimise.
+ * (`[Native] …` frames are real work in a native function and stay as rows.)
  */
-export const RUNTIME_FRAME_NAMES = new Set(["(root)", "(program)", IDLE_FRAME, GC_FRAME]);
+export const RUNTIME_FRAME_NAMES = new Set(["(root)", "(program)", IDLE_FRAME, GC_FRAME, BRACKET_ROOT_FRAME]);
+
+function isIdleFrame(name: string): boolean {
+  return name === IDLE_FRAME || name === BRACKET_ROOT_FRAME;
+}
+
+function isGcFrame(name: string): boolean {
+  return name === GC_FRAME || BRACKET_GC_FRAME.test(name);
+}
 
 const ANONYMOUS = "(anonymous)";
 
@@ -176,11 +194,11 @@ export function summarizeProfile(profile: CpuProfile): ProfileSummary {
   for (const node of nodes) {
     const name = functionName(node.callFrame ?? {});
     const selfUs = self.get(node.id) ?? 0;
-    if (name === IDLE_FRAME) {
+    if (isIdleFrame(name)) {
       idleUs += selfUs;
       continue;
     }
-    if (name === GC_FRAME) {
+    if (isGcFrame(name)) {
       gcUs += selfUs;
       continue;
     }

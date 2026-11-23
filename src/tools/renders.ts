@@ -50,6 +50,7 @@ export function registerRenderTools(server: McpServer): void {
           .describe("Start profiling and return a job id immediately, so you can drive the app while it runs."),
         label: z.string().optional().describe("Name for the background job, shown by get_job."),
       },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     },
     async ({ duration_ms, top, background, label }) => {
       try {

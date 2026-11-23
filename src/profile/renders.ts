@@ -350,6 +350,9 @@ export const RENDER_PROFILER_SOURCE = `
         if (out.indexOf(bySelf[i]) < 0) out.push(bySelf[i]);
       }
     }
+    // The per-component counts are the answer and the commit list (up to
+    // MAX_COMMITS records) the detail, so the counts go first: anything that
+    // shows this raw and cuts it short then cuts the detail.
     var report = {
       version: VERSION,
       pruned: state.pruned,
@@ -358,10 +361,10 @@ export const RENDER_PROFILER_SOURCE = `
       commitCount: state.commitCount,
       renderCount: state.renderCount,
       totalRenderMs: state.profiling ? round1(state.totalRenderMs) : null,
-      commits: state.commits,
-      counts: out,
       truncated: state.truncated,
-      errors: state.errors
+      errors: state.errors,
+      counts: out,
+      commits: state.commits
     };
     clear();
     return report;

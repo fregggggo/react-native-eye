@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getRegistry, type Connection } from "../core/registry.js";
@@ -144,7 +144,9 @@ async function resolveDisplay(
   const display = new Map<string, Display>();
   const unique = new Map<string, Entry>();
   for (const e of entries) {
-    if (!e.url) continue;
+    // Only bundle positions have a source map; Hermes' synthetic urls
+    // (`[native]`, `[suspended]`) would only be noise in the request.
+    if (!/^https?:\/\//i.test(e.url)) continue;
     const key = positionKey(e);
     if (!unique.has(key)) unique.set(key, e);
   }
@@ -240,6 +242,7 @@ export function registerJsProfileTools(server: McpServer): void {
           .optional()
           .describe("Write the raw .cpuprofile to disk (default true). Set false to get the summary only."),
       },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     },
     async ({ duration_ms, top, sampling_interval_us, save }) => {
       try {
@@ -253,8 +256,18 @@ export function registerJsProfileTools(server: McpServer): void {
 
         let savedPath: string | undefined;
         if (save !== false) {
-          savedPath = defaultProfilePath();
-          await writeFile(savedPath, JSON.stringify(profile));
+          // The profile is the expensive part and it has been taken; a missing
+          // or unwritable output dir costs the file, never the summary.
+          const path = defaultProfilePath();
+          try {
+            await mkdir(dirname(path), { recursive: true });
+            await writeFile(path, JSON.stringify(profile));
+            savedPath = path;
+          } catch (err) {
+            notes.push(
+              `Could not save the .cpuprofile to ${path}: ${err instanceof Error ? err.message : String(err)} — set RNE_OUTPUT_DIR to a writable directory.`,
+            );
+          }
         }
 
         const summary = summarizeProfile(profile);

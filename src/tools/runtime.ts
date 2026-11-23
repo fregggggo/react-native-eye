@@ -4,6 +4,10 @@ import { getRegistry } from "../core/registry.js";
 import { text, truncate } from "../core/format.js";
 import { toToolError, UserInputError } from "../core/errors.js";
 import { startJob, getJob, listJobs, type Job } from "../core/jobs.js";
+import { formatReport, isRenderReport } from "../profile/renders.js";
+
+/** Rows per table when a render profile comes back through get_job; profile_renders' own default. */
+const RENDER_REPORT_TOP = 15;
 
 function render(value: unknown): string {
   try {
@@ -29,7 +33,7 @@ export function registerRuntimeTools(server: McpServer): void {
       description:
         "Evaluate JavaScript in the app's runtime and return the result. Statements are allowed, and a promise result is awaited (await fetch(...), AsyncStorage.getItem(...)) — pass the promise itself, not `await` (Hermes has no async/await in evaluated code). Pass background: true for work that outlives one tool call (a long measurement, a snippet that samples for 30s) and collect the result with get_job.",
       inputSchema: {
-        code: z.string(),
+        code: z.string().describe("JavaScript to run in the app: an expression or statements; the last value is returned."),
         timeout_ms: z
           .number()
           .int()
@@ -43,6 +47,8 @@ export function registerRuntimeTools(server: McpServer): void {
           .describe("Start the evaluation and return a job id immediately instead of waiting for the result."),
         label: z.string().optional().describe("Name for a background job, shown by get_job."),
       },
+      // Arbitrary code: no destructive/open-world claim either way.
+      annotations: { readOnlyHint: false },
     },
     async ({ code, timeout_ms, background, label }) => {
       try {
@@ -69,6 +75,7 @@ export function registerRuntimeTools(server: McpServer): void {
       inputSchema: {
         id: z.string().optional().describe("Job id, e.g. \"j1\". Omit to list all jobs."),
       },
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     },
     async ({ id }) => {
       try {
@@ -88,6 +95,10 @@ export function registerRuntimeTools(server: McpServer): void {
         // whether to poll again before it reads anything else.
         if (job.status === "running") return text(`${header}\nstill running — poll again`);
         if (job.status === "failed") return text(`${header}\nerror: ${job.error ?? "unknown error"}`);
+        // A profile_renders job: the same report the foreground call prints.
+        // Raw, its 300 commits came first and the 4000-char cut took the
+        // per-component counts — the answer — off the end.
+        if (isRenderReport(job.value)) return text(`${header}\n${formatReport(job.value, RENDER_REPORT_TOP)}`);
         return text(`${header}\n${truncate(render(job.value) ?? "undefined", 4000)}`);
       } catch (err) {
         return toToolError(err);

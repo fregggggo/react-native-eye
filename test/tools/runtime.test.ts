@@ -4,7 +4,7 @@ import { registerRuntimeTools } from "../../src/tools/runtime.js";
 import { resetJobs, listJobs } from "../../src/core/jobs.js";
 import { getRegistry } from "../../src/core/registry.js";
 import { makeServer, callTool } from "../helpers/callTool.js";
-import { startFakeMetro, type FakeMetro } from "../helpers/fakeCdp.js";
+import { startFakeMetro, NO_REPLY, type FakeMetro } from "../helpers/fakeCdp.js";
 
 let metro: FakeMetro;
 beforeEach(() => getRegistry().reset());
@@ -56,6 +56,23 @@ describe("eval_js failure reporting", () => {
     const res = await callTool(server, "eval_js", { code: "boom()" });
     expect(res.content[0].text).toContain("App error: Error: BOOM_TEST");
     expect(res.content[0].text).not.toMatch(/Not connected|starting Metro/i);
+  });
+
+  it("reports a busy JS thread as not responding, not as a lost connection", async () => {
+    metro = await startFakeMetro({ port: 0 });
+    metro.setHandler("Runtime.enable", () => ({}));
+    metro.setHandler("Log.enable", () => ({}));
+    metro.setHandler("Runtime.evaluate", () => ({ result: { value: JSON.stringify({ s: "ok", v: "ok" }) } }));
+    await getRegistry().connect({ port: metro.port });
+    metro.setHandler("Runtime.evaluate", () => NO_REPLY); // the thread never gets to it
+    const server = makeServer();
+    registerRuntimeTools(server);
+    const res = await callTool(server, "eval_js", { code: "1 + 1", timeout_ms: 150 });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toMatch(/^App not responding: .*timed out after 150ms/);
+    expect(res.content[0].text).toMatch(/socket is still open/);
+    expect(res.content[0].text).not.toMatch(/Not connected|Run 'connect'|starting Metro/i);
+    expect(getRegistry().active_or_null?.connected).toBe(true);
   });
 
   it("accepts a caller-supplied timeout for long operations", async () => {
@@ -129,6 +146,33 @@ describe("eval_js background mode + get_job", () => {
     const status = await callTool(server, "get_job", { id: "j1" });
     expect(status.content[0].text).toMatch(/done/);
     expect(status.content[0].text).toContain('"total":42');
+  });
+
+  it("prints a profile_renders job as the formatted report, counts included", async () => {
+    // A 5s window easily has 60 commits; raw, that JSON passed 4000 chars well
+    // before the per-component counts and the cut removed them.
+    const report = {
+      version: 1, pruned: true, profiling: true, durationMs: 5000, commitCount: 60, renderCount: 180, totalRenderMs: 90,
+      commits: Array.from({ length: 60 }, (_, i) => ({
+        t: i * 80, n: 3, renderMs: 1.5, pruned: true,
+        roots: [{ name: "FeedRowWithAVeryLongComponentName", why: "props: item, onPress" }],
+      })),
+      counts: [{ name: "FeedRowWithAVeryLongComponentName", n: 120, c: 60, selfMs: 60 }, { name: "Avatar", n: 60, c: 60, selfMs: 30 }],
+      truncated: false, errors: 0,
+    };
+    metro = await startFakeMetro({ port: 0 });
+    metro.setHandler("Runtime.enable", () => ({}));
+    metro.setHandler("Log.enable", () => ({}));
+    metro.setHandler("Runtime.evaluate", () => ({ result: { value: JSON.stringify({ s: "ok", v: report }) } }));
+    const server = await connectedServer();
+    await callTool(server, "eval_js", { code: "profile()", background: true });
+    await new Promise((r) => setTimeout(r, 30));
+    const out: string = (await callTool(server, "get_job", { id: "j1" })).content[0].text;
+    expect(out).toMatch(/^j1 \[done\]/);
+    expect(out).toContain("Top by renders:");
+    expect(out).toContain("FeedRowWithAVeryLongComponentName ×120");
+    expect(out).toContain("Avatar ×60");
+    expect(out).not.toContain('"commits"');
   });
 
   it("reports an app-side throw as a failed job, not a tool error", async () => {

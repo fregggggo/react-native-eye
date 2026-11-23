@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -250,6 +250,27 @@ describe("profile_js saving", () => {
     const saved = JSON.parse(await readFile(join(outDir, files[0]), "utf-8"));
     expect(saved.nodes).toHaveLength(8);
     expect(saved.samples).toHaveLength(10);
+  });
+
+  it("creates a missing output directory", async () => {
+    await connectWithProfiler();
+    process.env.RNE_OUTPUT_DIR = join(outDir, "nested", "dir");
+    const res = await profileJs({ duration_ms: 10 });
+    expect(res.isError).toBeFalsy();
+    expect(await readdir(join(outDir, "nested", "dir"))).toHaveLength(1);
+  });
+
+  it("keeps the summary when the profile cannot be written", async () => {
+    await connectWithProfiler();
+    // A regular file where the directory should be: neither mkdir nor the write can succeed.
+    const blocker = join(outDir, "not-a-dir");
+    await writeFile(blocker, "x");
+    process.env.RNE_OUTPUT_DIR = blocker;
+    const res = await profileJs({ duration_ms: 10 });
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("Top self:");
+    expect(res.content[0].text).toMatch(/Could not save the \.cpuprofile/);
+    expect(res.content[0].text).not.toMatch(/Chrome DevTools/);
   });
 
   it("writes nothing with save: false", async () => {

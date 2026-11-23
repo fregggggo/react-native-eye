@@ -130,6 +130,35 @@ describe("summarizeProfile", () => {
     expect(() => summarizeProfile(p)).not.toThrow();
   });
 
+  it("reads the bracketed frame names RN 0.83's Hermes emits", () => {
+    // Shape of a live profile of an idle app: 167 of 169 samples sat on
+    // [root] itself — Hermes has no (idle) frame — which read as "busy 100%".
+    const bundle = "http://localhost:8081/index.bundle";
+    const p: CpuProfile = {
+      startTime: 0,
+      endTime: 169000,
+      nodes: [
+        { id: 1, callFrame: { functionName: "[root]", url: "[root]", lineNumber: -1, columnNumber: -1 }, children: [2, 3, 4] },
+        { id: 2, callFrame: { functionName: "[GC Young Gen]", url: "[suspended]", lineNumber: -1, columnNumber: -1 } },
+        { id: 3, callFrame: { functionName: "tick", url: bundle, lineNumber: 41, columnNumber: 2 }, children: [5] },
+        { id: 4, callFrame: { functionName: "flush", url: bundle, lineNumber: 99, columnNumber: 0 } },
+        { id: 5, callFrame: { functionName: "[Native] weakMapPrototypeSet", url: "[native]", lineNumber: -1, columnNumber: -1 } },
+      ],
+      samples: [...Array(165).fill(1), 2, 3, 5, 4],
+      timeDeltas: Array(169).fill(1000),
+    };
+    const s = summarizeProfile(p);
+    expect(s.idlePct).toBeCloseTo((165 / 169) * 100, 3);
+    expect(s.gcPct).toBeCloseTo((1 / 169) * 100, 3);
+    expect(s.busyPct).toBeCloseTo((3 / 169) * 100, 3);
+    const names = s.bySelf.map((e) => e.name);
+    expect(names).not.toContain("[root]");
+    expect(names).not.toContain("[GC Young Gen]");
+    // A native function is real work, so it stays a row.
+    expect(names).toEqual(expect.arrayContaining(["tick", "flush", "[Native] weakMapPrototypeSet"]));
+    expect(find(s.byInclusive, "tick").inclusiveMs).toBeCloseTo(2, 5);
+  });
+
   it("frameKey identifies a function by name and source position", () => {
     expect(frameKey({ functionName: "App", url: "b.js", lineNumber: 9, columnNumber: 4 })).toBe("App@b.js:10:5");
     expect(frameKey({ url: "b.js", lineNumber: 0, columnNumber: 0 })).toBe("(anonymous)@b.js:1:1");
