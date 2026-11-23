@@ -3,6 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getRegistry } from "../core/registry.js";
 import { getStateExpression, currentRouteExpression } from "../state/snippets.js";
 import { text, truncate, lostNote } from "../core/format.js";
+import { Redactor } from "../core/redact.js";
 import { toToolError } from "../core/errors.js";
 
 export function registerCheckStateTools(server: McpServer): void {
@@ -26,14 +27,15 @@ export function registerCheckStateTools(server: McpServer): void {
         if (lost) {
           // Route and store live in the runtime that is gone; the errors it
           // raised before going are still here and are what explains it.
+          const red = new Redactor();
           const kept = conn.errors.last(5);
           const errText = kept.length
             ? kept
-                .map((e) => `[${e.kind}] ${truncate(e.text, 300)}${conn.errorIsFromEarlierRuntime(e) ? " (before reload)" : ""}`)
+                .map((e) => `[${e.kind}] ${truncate(red.apply(e.text), 300)}${conn.errorIsFromEarlierRuntime(e) ? " (before reload)" : ""}`)
                 .join("\n")
             : "none";
           return text(
-            `ROUTE:\n(unavailable: not connected)\n\nSTATE:\n(unavailable: not connected)\n\nERRORS:\n${errText}${lostNote(lost)}`,
+            `ROUTE:\n(unavailable: not connected)\n\nSTATE:\n(unavailable: not connected)\n\nERRORS:\n${errText}${red.note()}${lostNote(lost)}`,
           );
         }
         // Sections are independent: a missing store must not hide the errors.
@@ -48,9 +50,10 @@ export function registerCheckStateTools(server: McpServer): void {
         await conn.installInterceptors("errors");
         await conn.drainErrors().catch(() => {});
         const errs = conn.errors.last(5);
+        const red = new Redactor();
         const errText = errs.length
           ? errs
-              .map((e) => `[${e.kind}] ${truncate(e.text, 300)}${conn.errorIsFromEarlierRuntime(e) ? " (before reload)" : ""}`)
+              .map((e) => `[${e.kind}] ${truncate(red.apply(e.text), 300)}${conn.errorIsFromEarlierRuntime(e) ? " (before reload)" : ""}`)
               .join("\n")
           : "none";
         // JSON.stringify(undefined) is undefined, not a string — an empty answer
@@ -60,7 +63,7 @@ export function registerCheckStateTools(server: McpServer): void {
           typeof v === "string" ? v : (JSON.stringify(v) ?? fallback);
         const route = asText(routeRaw, "(no answer from the app)");
         const state = asText(stateRaw, "(no answer from the app)");
-        return text(`ROUTE:\n${truncate(route, 500)}\n\nSTATE:\n${truncate(state, 3000)}\n\nERRORS:\n${errText}`);
+        return text(`ROUTE:\n${truncate(route, 500)}\n\nSTATE:\n${truncate(red.apply(state), 3000)}\n\nERRORS:\n${errText}${red.note()}`);
       } catch (err) {
         return toToolError(err);
       }

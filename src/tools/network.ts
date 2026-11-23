@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getRegistry } from "../core/registry.js";
 import { text, truncate, lostNote } from "../core/format.js";
+import { Redactor, redact, redactionNote } from "../core/redact.js";
 import { toToolError } from "../core/errors.js";
 
 /**
@@ -94,7 +95,7 @@ export function registerNetworkTools(server: McpServer): void {
     {
       title: "Get network",
       description:
-        "Recent HTTP requests captured in-app, including ones still waiting for a response (shown as pending). The list view shortens long URLs (query strings collapse to a char count) — pass detail:<seq> for the full URL and request/response bodies. " +
+        "Recent HTTP requests captured in-app, including ones still waiting for a response (shown as pending). The list view shortens long URLs (query strings collapse to a char count) — pass detail:<seq> for the full URL and request/response bodies. Secret-looking values (tokens, passwords, cookies) in URLs and bodies are masked as [redacted:<id>]. " +
         "Dev-tooling traffic (Metro, Expo, react-devtools, dev polls) is hidden unless include_dev:true; exclude:[...] drops URLs by substring. " +
         "Note: requests before connect are missed (cold start).",
       inputSchema: {
@@ -117,7 +118,13 @@ export function registerNetworkTools(server: McpServer): void {
           await conn.installInterceptors("network");
           await conn.drainNetwork();
         }
-        const all = conn.network.all();
+        // URLs are masked before search/exclude run, so a filter cannot be used
+        // to probe a token in a query string one substring at a time.
+        const red = new Redactor();
+        const all = conn.network.all().map((e) => {
+          const r = redact(e.url);
+          return { ...e, url: r.text, masked: r.count };
+        });
         // `detail` looks up by seq across everything captured: searching first
         // made `search` + `detail` report a request that plainly exists as missing.
         // The noise filters are list-view only for the same reason.
@@ -130,14 +137,14 @@ export function registerNetworkTools(server: McpServer): void {
             `${e.method} ${e.url}`,
             e.pending
               ? "status: (pending — sent, no response yet)"
-              : `status: ${e.status ?? "(none)"}${e.error ? ` error: ${e.error}` : ""}`,
+              : `status: ${e.status ?? "(none)"}${e.error ? ` error: ${red.apply(e.error)}` : ""}`,
             `duration: ${e.durationMs ?? "?"}ms`,
-            `request body: ${e.requestBody ? truncate(e.requestBody, 4100) : "(none)"}`,
+            `request body: ${e.requestBody ? truncate(red.apply(e.requestBody), 4100) : "(none)"}`,
             `response body: ${
-              e.responseBody ? truncate(e.responseBody, 4100) : e.bodyPending ? "(still loading — retry)" : "(none)"
+              e.responseBody ? truncate(red.apply(e.responseBody), 4100) : e.bodyPending ? "(still loading — retry)" : "(none)"
             }`,
           ];
-          return text(parts.join("\n") + lostNote(lost));
+          return text(parts.join("\n") + redactionNote(red.count + e.masked) + lostNote(lost));
         }
         let entries = all;
         if (search) {
@@ -188,7 +195,7 @@ export function registerNetworkTools(server: McpServer): void {
           const levers = [devHidden ? "include_dev: true" : "", excluded ? "exclude" : ""].filter(Boolean);
           lines.push(`(${devHidden + excluded} hidden: ${what.join(", ")} — ${levers.join(" / ")})`);
         }
-        return text(lines.join("\n") + lostNote(lost));
+        return text(lines.join("\n") + redactionNote(sliced.reduce((n, e) => n + e.masked, 0)) + lostNote(lost));
       } catch (err) {
         return toToolError(err);
       }

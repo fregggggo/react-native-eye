@@ -42,6 +42,28 @@ describe("get_logs", () => {
     expect(bySearch.content[0].text).toContain("hello world");
   });
 
+  it("masks secrets, explains the mask, and does not let search probe them", async () => {
+    await connect();
+    const conn = getRegistry().active();
+    conn.logs.push({ seq: 1, level: "log", text: `login {"accessToken":"abc123def456","user":"anna"}`, timestamp: 1 });
+    const server = makeServer();
+    registerLogTools(server);
+    const res = await callTool(server, "get_logs", {});
+    expect(res.content[0].text).toMatch(/"accessToken":"\[redacted:[0-9a-f]{6}\]","user":"anna"/);
+    expect(res.content[0].text).not.toContain("abc123def456");
+    expect(res.content[0].text).toContain("1 secret-looking value masked");
+    const probe = await callTool(server, "get_logs", { search: "abc123" });
+    expect(probe.content[0].text).toMatch(/no logs/i);
+    process.env.RNE_SHOW_SECRETS = "1";
+    try {
+      const shown = await callTool(server, "get_logs", {});
+      expect(shown.content[0].text).toContain("abc123def456");
+      expect(shown.content[0].text).not.toContain("masked");
+    } finally {
+      delete process.env.RNE_SHOW_SECRETS;
+    }
+  });
+
   it("still answers from what was captured when the app is gone", async () => {
     const targets: any[] = [{ id: "t1", title: "App", deviceName: "iPhone 16" }];
     metro = await startFakeMetro({ port: 0, targets });

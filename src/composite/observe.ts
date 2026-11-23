@@ -5,6 +5,7 @@ import { captureScreenshot } from "../tools/screenshot.js";
 import { captureLayoutWithSource, layoutWarning, type LayoutSource } from "../tools/layout.js";
 import { formatLayout } from "../layout/elements.js";
 import { truncate, lostNote } from "../core/format.js";
+import { redact } from "../core/redact.js";
 import { toToolError } from "../core/errors.js";
 import type { DeviceDriver } from "../drivers/types.js";
 
@@ -72,7 +73,7 @@ export async function observeInternal(
       `ERRORS:\n${
         errs.length
           ? errs
-              .map((e) => `[${e.kind}] ${truncate(e.text, 300)}${conn.errorIsFromEarlierRuntime(e) ? " (before reload)" : ""}`)
+              .map((e) => `[${e.kind}] ${truncate(redact(e.text).text, 300)}${conn.errorIsFromEarlierRuntime(e) ? " (before reload)" : ""}`)
               .join("\n")
           : "none"
       }`,
@@ -80,7 +81,7 @@ export async function observeInternal(
     const logs = conn.logs.last(10);
     const gapNote = conn.logs.gaps.length > 0 ? " (stream has a gap — app reloaded or reconnected)" : "";
     sections.push(
-      `LOGS${gapNote}:\n${logs.length ? logs.map((l) => `[${l.level}] ${truncate(l.text, 200)}`).join("\n") : "none"}`,
+      `LOGS${gapNote}:\n${logs.length ? logs.map((l) => `[${l.level}] ${truncate(redact(l.text).text, 200)}`).join("\n") : "none"}`,
     );
     if (lost) sections.push(lostNote(lost.reason).trim());
   } else {

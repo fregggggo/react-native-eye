@@ -35,6 +35,45 @@ describe("get_network", () => {
     expect(res.content[0].text).toContain("GET http://api/users → 200 (12ms)");
   });
 
+  it("masks secrets in URLs and bodies", async () => {
+    metro = await startFakeMetro({ port: 0 });
+    metro.setHandler("Runtime.enable", () => ({}));
+    metro.setHandler("Log.enable", () => ({}));
+    metro.setHandler("Runtime.evaluate", (p) => {
+      if (String(p.expression).includes("__RNE_NET__")) {
+        return {
+          result: {
+            value: JSON.stringify([
+              {
+                seq: 1,
+                method: "POST",
+                url: "http://api/login?api_key=KEY12345",
+                status: 200,
+                durationMs: 12,
+                timestamp: 1,
+                requestBody: `{"email":"a@b.c","password":"hunter2"}`,
+                responseBody: `{"access_token":"abc123def456","expires_in":3600}`,
+              },
+            ]),
+          },
+        };
+      }
+      return { result: { value: undefined } };
+    });
+    await getRegistry().connect({ port: metro.port });
+    const server = makeServer();
+    registerNetworkTools(server);
+    const list = (await callTool(server, "get_network", {})).content[0].text;
+    expect(list).toMatch(/api_key=\[redacted:[0-9a-f]{6}\] → 200/);
+    expect(list).toContain("1 secret-looking value masked");
+    expect((await callTool(server, "get_network", { search: "KEY12345" })).content[0].text).toMatch(/No network requests/);
+    const detail = (await callTool(server, "get_network", { detail: 1 })).content[0].text;
+    expect(detail).not.toMatch(/KEY12345|hunter2|abc123def456/);
+    expect(detail).toContain(`"email":"a@b.c"`);
+    expect(detail).toContain(`"expires_in":3600`);
+    expect(detail).toContain("3 secret-looking values masked");
+  });
+
   it("shows bodies with detail", async () => {
     metro = await startFakeMetro({ port: 0 });
     metro.setHandler("Runtime.enable", () => ({}));

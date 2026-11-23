@@ -1,3 +1,4 @@
+import { redact } from "../core/redact.js";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { runtimeContext } from "../tools/context.js";
@@ -98,7 +99,7 @@ export async function runFlowInternal(
     const fresh = all.filter((e) => e.seq > errWatermark);
     if (fresh.length) {
       errWatermark = fresh[fresh.length - 1].seq;
-      return fresh[fresh.length - 1].text;
+      return redact(fresh[fresh.length - 1].text).text;
     }
     return undefined;
   };

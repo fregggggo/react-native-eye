@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getRegistry } from "../core/registry.js";
 import { text, truncate, lostNote } from "../core/format.js";
+import { redact, redactionNote } from "../core/redact.js";
 import { toToolError } from "../core/errors.js";
 
 export function registerLogTools(server: McpServer): void {
@@ -10,7 +11,7 @@ export function registerLogTools(server: McpServer): void {
     {
       title: "Get logs",
       description:
-        "Recent console logs from the app. Filter by level and/or search substring. Logs survive a reconnect to the same app, and are still readable after the app crashed or the connection dropped. Note: logs from before connect are only there if the runtime replays them on connect — reload_app to catch cold-start output.",
+        "Recent console logs from the app. Filter by level and/or search substring. Secret-looking values (tokens, passwords, cookies) are masked as [redacted:<id>]. Logs survive a reconnect to the same app, and are still readable after the app crashed or the connection dropped. Note: logs from before connect are only there if the runtime replays them on connect — reload_app to catch cold-start output.",
       inputSchema: {
         limit: z.number().int().positive().max(500).optional().describe("How many of the most recent matching lines (default 30)."),
         level: z.enum(["log", "info", "warn", "error", "debug"]).optional().describe("Only lines logged at this level."),
@@ -21,7 +22,12 @@ export function registerLogTools(server: McpServer): void {
     async ({ limit, level, search }) => {
       try {
         const { conn, lost } = await getRegistry().ensureOrLast();
-        let entries = conn.logs.all();
+        // Masked before the search runs: a search that matched on the raw text
+        // would answer "does the token start with …" one call at a time.
+        let entries = conn.logs.all().map((e) => {
+          const r = redact(e.text);
+          return { ...e, text: r.text, masked: r.count };
+        });
         if (level) entries = entries.filter((e) => e.level === level);
         if (search) {
           const q = search.toLowerCase();
@@ -43,7 +49,9 @@ export function registerLogTools(server: McpServer): void {
           return text(`No logs captured since connect.${gapNote}${lostNote(lost)}`);
         }
         const lines = sliced.map((e) => `[${e.level}] ${truncate(e.text, 500)}`);
-        return text(lines.join("\n") + gapNote + lostNote(lost));
+        // Counted over what is shown, not over the whole buffer.
+        const masked = sliced.reduce((n, e) => n + e.masked, 0);
+        return text(lines.join("\n") + gapNote + redactionNote(masked) + lostNote(lost));
       } catch (err) {
         return toToolError(err);
       }

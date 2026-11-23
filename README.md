@@ -247,6 +247,7 @@ All four work on a dev build with zero app setup.
 |---|---|
 | `METRO_PORT` | Metro's port when it is not one of the standard ones. `--port` in `args` and the `connect` tool's `port` do the same |
 | `RNE_OUTPUT_DIR` | Default directory for recordings and saved profiles (default `~/Downloads`) |
+| `RNE_SHOW_SECRETS=1` | Turn off secret masking. By default `get_logs`, `get_errors`, `get_network`, `get_state`, `get_component_tree`, `check_state`, `observe` and `run_flow` replace tokens, passwords, cookies and API keys with `[redacted:<id>]` (the same id means the same value). `eval_js` is never masked |
 | `RNE_FILTERED_TOOLS` | Comma-separated tool names to hide |
 | `RNE_CACHE_DIR` | Where the compiled OCR helper lives (default `~/Library/Caches/react-native-eye`) |
 | `RNE_NATIVE_DRIVER=off` | Never install or start the on-device runner (iOS) or server (Android). Taps, swipes, typing and OS layout go through axe/adb exactly as before the driver existed. On Android it also force-stops a server left running by an earlier session |
@@ -267,6 +268,8 @@ While the Android server is up it holds UiAutomation, so other UiAutomation clie
 ## Privacy
 
 **No telemetry. No accounts. No cloud.** The only network traffic is to localhost (Metro) and local device drivers. This is enforced by an automated test that fails the build if any external URL appears in the source, and another that fails if a license/account/feedback tool ever shows up in the tool surface.
+
+**Secrets stay out of the agent's context.** What the app logs, sends and stores reaches the model, and from there transcripts you do not control. Tokens (JWT, `Bearer`/`Basic`, vendor API keys), passwords, cookies and values under keys like `token`, `secret`, `password` or `api_key` are masked as `[redacted:<id>]` in `get_logs`, `get_errors`, `get_network`, `get_state`, `get_component_tree`, `check_state`, `observe` and `run_flow`. The id is a hash of the value, so "is the refresh call sending the token the login returned?" stays answerable. Filters (`search`, `exclude`) run on the masked text. `RNE_SHOW_SECRETS=1` in the server's environment turns masking off; it is deliberately not a tool parameter, which the agent could set itself. `eval_js` returns what you ask for, unmasked.
 
 ## Limitations
 

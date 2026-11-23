@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getRegistry, RUNTIME_RELOADING_MESSAGE } from "../core/registry.js";
 import { text, truncate, lostNote } from "../core/format.js";
+import { Redactor } from "../core/redact.js";
 import { toToolError } from "../core/errors.js";
 
 export function registerErrorTools(server: McpServer): void {
@@ -19,6 +20,7 @@ export function registerErrorTools(server: McpServer): void {
     async ({ limit }) => {
       try {
         const { conn, lost } = await getRegistry().ensureOrLast();
+        const red = new Redactor();
         if (lost) {
           // Nothing to drain from an app we cannot reach; what was pulled
           // before it went away is the answer.
@@ -26,8 +28,10 @@ export function registerErrorTools(server: McpServer): void {
           if (kept.length === 0) return text(`No errors were captured before the connection dropped.${lostNote(lost)}`);
           return text(
             kept
-              .map((e) => `[${e.kind}] ${truncate(e.text, 800)}${conn.errorIsFromEarlierRuntime(e) ? " (before reload)" : ""}`)
-              .join("\n") + lostNote(lost),
+              .map((e) => `[${e.kind}] ${truncate(red.apply(e.text), 800)}${conn.errorIsFromEarlierRuntime(e) ? " (before reload)" : ""}`)
+              .join("\n") +
+              red.note() +
+              lostNote(lost),
           );
         }
         await conn.installInterceptors("errors");
@@ -68,8 +72,8 @@ export function registerErrorTools(server: McpServer): void {
         // not the state of the app now; unmarked, it reads as a new failure.
         return text(
           entries
-            .map((e) => `[${e.kind}] ${truncate(e.text, 800)}${conn.errorIsFromEarlierRuntime(e) ? " (before reload)" : ""}`)
-            .join("\n"),
+            .map((e) => `[${e.kind}] ${truncate(red.apply(e.text), 800)}${conn.errorIsFromEarlierRuntime(e) ? " (before reload)" : ""}`)
+            .join("\n") + red.note(),
         );
       } catch (err) {
         return toToolError(err);

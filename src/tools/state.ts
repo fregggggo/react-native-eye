@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getRegistry } from "../core/registry.js";
 import { text, truncate } from "../core/format.js";
+import { Redactor } from "../core/redact.js";
 import { toToolError } from "../core/errors.js";
 import { getStateExpression, componentTreeExpression } from "../state/snippets.js";
 
@@ -11,7 +12,7 @@ export function registerStateTools(server: McpServer): void {
     {
       title: "Get state",
       description:
-        "Read app store state (Redux/Zustand/custom), summarised depth-first inside the app so the result stays valid JSON. Optionally a dot-path (e.g. 'user.name') and a depth (default 3). `resolved` says whether the path actually walked to a value — a mistyped segment reports `resolved:false` with `failedAt` and `availableKeys` instead of silently looking the same as an honest `undefined`. Assign your store to globalThis.__RNE_STORES__ for reliable access.",
+        "Read app store state (Redux/Zustand/custom), summarised depth-first inside the app so the result stays valid JSON. Secret-looking values (tokens, passwords) are masked as [redacted:<id>]. Optionally a dot-path (e.g. 'user.name') and a depth (default 3). `resolved` says whether the path actually walked to a value — a mistyped segment reports `resolved:false` with `failedAt` and `availableKeys` instead of silently looking the same as an honest `undefined`. Assign your store to globalThis.__RNE_STORES__ for reliable access.",
       inputSchema: {
         path: z.string().optional().describe("Dot-path into the state, e.g. 'user.name' or 'cart.items' for a map of named stores. Omit for the whole state."),
         depth: z.number().int().positive().max(8).optional().describe("How many levels of the value to expand (default 3); deeper levels are summarised."),
@@ -22,7 +23,8 @@ export function registerStateTools(server: McpServer): void {
       try {
         const conn = await getRegistry().ensure();
         const raw = await conn.evaluate(getStateExpression(path, depth ?? 3));
-        return text(truncate(typeof raw === "string" ? raw : JSON.stringify(raw), 4000));
+        const red = new Redactor();
+        return text(truncate(red.apply(typeof raw === "string" ? raw : JSON.stringify(raw)), 4000) + red.note());
       } catch (err) {
         return toToolError(err);
       }
@@ -46,7 +48,9 @@ export function registerStateTools(server: McpServer): void {
       try {
         const conn = await getRegistry().ensure();
         const raw = await conn.evaluate(componentTreeExpression(max_depth ?? 3, root));
-        const str = typeof raw === "string" ? raw : JSON.stringify(raw);
+        // Text and props can carry a token (a WebView source URL, an auth header prop).
+        const red = new Redactor();
+        const str = red.apply(typeof raw === "string" ? raw : JSON.stringify(raw));
         // Read `truncated` off the full, untruncated string before slicing it
         // for the wire: a tree big enough to set the flag is also big enough
         // that the 4000-char cap below can (and for a real 500-node tree,
@@ -69,7 +73,7 @@ export function registerStateTools(server: McpServer): void {
         } catch {
           // Not parseable JSON (a foreign/older runtime) — nothing to add.
         }
-        return text(truncate(str, 4000) + truncatedNote);
+        return text(truncate(str, 4000) + truncatedNote + red.note());
       } catch (err) {
         return toToolError(err);
       }
