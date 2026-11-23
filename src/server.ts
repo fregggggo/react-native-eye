@@ -46,7 +46,12 @@ export function buildServer(): McpServer {
 
   server.registerTool(
     "ping",
-    { title: "Ping", description: "Health check. Returns 'pong'.", inputSchema: {} },
+    {
+      title: "Ping",
+      description: "Health check. Returns 'pong'.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
     async () => ({ content: [{ type: "text", text: "pong" }] }),
   );
 
