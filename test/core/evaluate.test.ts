@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Connection } from "../../src/core/registry.js";
-import { evalWrapper, parseEnvelope, isPolyfilledPromiseShape } from "../../src/core/evaluate.js";
+import { evalWrapper, parseEnvelope, isPolyfilledPromiseShape, escapeSurrogates } from "../../src/core/evaluate.js";
 import { makeRuntime, fakeClient } from "../helpers/rnRuntime.js";
 
 function connectionOn(runtime: ReturnType<typeof makeRuntime>, onSend?: (m: string) => void): Connection {
@@ -74,6 +74,59 @@ describe("Connection.evaluate against a polyfilled-Promise runtime", () => {
       runtime.sandbox.__RNE_EV__ = {};
     }, 30);
     await expect(pending).rejects.toThrow(/reloaded/i);
+  });
+});
+
+describe("characters outside the BMP", () => {
+  // Hermes' CDP agent re-encodes the source unit by unit, so a raw surrogate
+  // pair failed to compile on a real RN 0.83 app ("Invalid UTF-8 code point").
+  const SURROGATE = /[\uD800-\uDFFF]/;
+
+  function recording(runtime: ReturnType<typeof makeRuntime>) {
+    const sent: string[] = [];
+    const replies: unknown[] = [];
+    const client = fakeClient(runtime);
+    const send = client.send.bind(client);
+    client.send = async (method: string, params: any) => {
+      if (method === "Runtime.evaluate") sent.push(params.expression);
+      const res: any = await send(method, params);
+      replies.push(res?.result?.value);
+      return res;
+    };
+    return { conn: new Connection(client as any, { port: 0, targetId: "t", title: "fake" }), sent, replies };
+  }
+
+  it("sends an emoji in a string literal as escapes, and it still means the emoji", async () => {
+    const runtime = makeRuntime();
+    const { conn, sent } = recording(runtime);
+    await expect(conn.evaluate(`"🐱".length`)).resolves.toBe(2);
+    await expect(conn.evaluate("`cat: ${'🐱'}`")).resolves.toBe("cat: 🐱");
+    expect(sent.length).toBeGreaterThan(0);
+    for (const s of sent) expect(s).not.toMatch(SURROGATE);
+  });
+
+  it("hands an emoji result back intact", async () => {
+    const runtime = makeRuntime();
+    const { conn, replies } = recording(runtime);
+    await expect(conn.evaluate(`"🐱"`)).resolves.toBe("🐱");
+    await expect(conn.evaluate(`Promise.resolve({ label: "go 🚀" })`)).resolves.toEqual({ label: "go 🚀" });
+    // The app's own reply crosses the same agent, so it travels escaped too.
+    for (const r of replies) if (typeof r === "string") expect(r).not.toMatch(SURROGATE);
+  });
+
+  it("survives a lone surrogate instead of crashing", async () => {
+    const runtime = makeRuntime();
+    const { conn, sent } = recording(runtime);
+    const lone = String.fromCharCode(0xd83d);
+    await expect(conn.evaluate(`"${lone}".length`)).resolves.toBe(1);
+    for (const s of sent) expect(s).not.toMatch(SURROGATE);
+  });
+
+  it("keeps an identity-escaped emoji and an escaped backslash apart", () => {
+    // `"\🐱"` is the emoji itself; `"\\🐱"` is a backslash followed by it.
+    expect(eval(escapeSurrogates(`"\\🐱"`))).toBe("🐱");
+    expect(eval(escapeSurrogates(`"\\\\🐱"`))).toBe("\\🐱");
+    expect(escapeSurrogates("plain ascii")).toBe("plain ascii");
   });
 });
 
