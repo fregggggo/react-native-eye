@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getRegistry } from "../core/registry.js";
-import { text, truncate } from "../core/format.js";
+import { text, truncate, lostNote } from "../core/format.js";
 import { toToolError } from "../core/errors.js";
 
 /**
@@ -94,43 +94,50 @@ export function registerNetworkTools(server: McpServer): void {
     {
       title: "Get network",
       description:
-        "Recent HTTP requests captured in-app. The list view shortens long URLs (query strings collapse to a char count) — pass detail:<seq> for the full URL and request/response bodies. " +
+        "Recent HTTP requests captured in-app, including ones still waiting for a response (shown as pending). The list view shortens long URLs (query strings collapse to a char count) — pass detail:<seq> for the full URL and request/response bodies. " +
         "Dev-tooling traffic (Metro, Expo, react-devtools, dev polls) is hidden unless include_dev:true; exclude:[...] drops URLs by substring. " +
         "Note: requests before connect are missed (cold start).",
       inputSchema: {
-        limit: z.number().int().positive().max(200).optional(),
-        search: z.string().optional(),
-        exclude: z.array(z.string()).optional(),
-        include_dev: z.boolean().optional(),
-        detail: z.number().int().optional(),
+        limit: z.number().int().positive().max(200).optional().describe("How many of the most recent matching requests (default 20)."),
+        search: z.string().optional().describe("Only requests whose URL contains this text (case-insensitive)."),
+        exclude: z.array(z.string()).optional().describe("Drop requests whose URL contains any of these substrings."),
+        include_dev: z.boolean().optional().describe("Also show dev-tooling traffic (Metro, Expo, react-devtools, dev polls)."),
+        detail: z.number().int().optional().describe("A request's #seq from the list: returns its full URL, status and bodies."),
       },
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     },
     async ({ limit, search, exclude, include_dev, detail }) => {
       try {
-        const conn = await getRegistry().ensure();
-        // Cheap and idempotent: the source returns "ok" without touching
-        // anything when its own wrapper is still live. It is what turns a
-        // silently replaced interceptor back on instead of reporting an empty
-        // buffer as "the app made no requests" (field test D14).
-        await conn.installInterceptors("network");
-        await conn.drainNetwork();
+        const { conn, lost } = await getRegistry().ensureOrLast();
+        if (!lost) {
+          // Cheap and idempotent: the source returns "ok" without touching
+          // anything when its own wrapper is still live. It is what turns a
+          // silently replaced interceptor back on instead of reporting an empty
+          // buffer as "the app made no requests" (field test D14).
+          await conn.installInterceptors("network");
+          await conn.drainNetwork();
+        }
         const all = conn.network.all();
         // `detail` looks up by seq across everything captured: searching first
         // made `search` + `detail` report a request that plainly exists as missing.
         // The noise filters are list-view only for the same reason.
         if (detail !== undefined) {
           const e = all.find((x) => x.seq === detail);
-          if (!e) return text(`No request with seq ${detail}.`);
+          if (!e) return text(`No request with seq ${detail}.${lostNote(lost)}`);
+          // Bodies are capped in the app at 4000 chars plus a "(+N chars)" tail;
+          // the slack keeps that tail visible here.
           const parts = [
             `${e.method} ${e.url}`,
-            `status: ${e.status ?? "(none)"}${e.error ? ` error: ${e.error}` : ""}`,
+            e.pending
+              ? "status: (pending — sent, no response yet)"
+              : `status: ${e.status ?? "(none)"}${e.error ? ` error: ${e.error}` : ""}`,
             `duration: ${e.durationMs ?? "?"}ms`,
-            `request body: ${e.requestBody ? truncate(e.requestBody, 4000) : "(none)"}`,
+            `request body: ${e.requestBody ? truncate(e.requestBody, 4100) : "(none)"}`,
             `response body: ${
-              e.responseBody ? truncate(e.responseBody, 4000) : e.bodyPending ? "(still loading — retry)" : "(none)"
+              e.responseBody ? truncate(e.responseBody, 4100) : e.bodyPending ? "(still loading — retry)" : "(none)"
             }`,
           ];
-          return text(parts.join("\n"));
+          return text(parts.join("\n") + lostNote(lost));
         }
         let entries = all;
         if (search) {
@@ -160,7 +167,7 @@ export function registerNetworkTools(server: McpServer): void {
           // Mid-reload it cannot be healthy yet, and another reload is the one
           // thing that would not help (field test D33).
           const unhealthy =
-            conn.interceptorStatus === "ok"
+            lost || conn.interceptorStatus === "ok"
               ? ""
               : conn.runtimeSettling
                 ? ` The app's JS runtime is still starting after a reload — network capture is reinstalled automatically; retry in a few seconds.`
@@ -169,18 +176,19 @@ export function registerNetworkTools(server: McpServer): void {
           // default filter swallowed must never read as an idle app.
           const noise = devHidden ? ` ${devHidden} hidden as dev noise — pass include_dev: true to see them.` : "";
           const dropped = excluded ? ` ${excluded} hidden by exclude.` : "";
-          return text(`No network requests captured.${noise}${dropped}${unhealthy}${restartNote(conn)}`);
+          return text(`No network requests captured.${noise}${dropped}${unhealthy}${restartNote(conn)}${lostNote(lost)}`);
         }
-        const lines = sliced.map(
-          (e) =>
-            `#${e.seq} ${e.method} ${shortenUrl(e.url)} → ${e.error ? "ERR" : e.status ?? "?"} (${e.durationMs ?? "?"}ms)`,
+        const lines = sliced.map((e) =>
+          e.pending
+            ? `#${e.seq} ${e.method} ${shortenUrl(e.url)} → pending (no response yet)`
+            : `#${e.seq} ${e.method} ${shortenUrl(e.url)} → ${e.error ? "ERR" : e.status ?? "?"} (${e.durationMs ?? "?"}ms)`,
         );
         if (devHidden || excluded) {
           const what = [devHidden ? `${devHidden} dev noise` : "", excluded ? `${excluded} excluded` : ""].filter(Boolean);
           const levers = [devHidden ? "include_dev: true" : "", excluded ? "exclude" : ""].filter(Boolean);
           lines.push(`(${devHidden + excluded} hidden: ${what.join(", ")} — ${levers.join(" / ")})`);
         }
-        return text(lines.join("\n"));
+        return text(lines.join("\n") + lostNote(lost));
       } catch (err) {
         return toToolError(err);
       }

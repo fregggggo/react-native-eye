@@ -175,6 +175,28 @@ describe("get_errors", () => {
   });
 });
 
+describe("get_errors after the connection is gone", () => {
+  it("still reports the error captured before the app went away", async () => {
+    const targets: any[] = [{ id: "t1", title: "App", deviceName: "iPhone 16" }];
+    metro = await startFakeMetro({ port: 0, targets });
+    metro.setHandler("Runtime.enable", () => ({}));
+    metro.setHandler("Log.enable", () => ({}));
+    metro.setHandler("Runtime.evaluate", () => ({ result: { value: undefined } }));
+    const conn = await getRegistry().connect({ port: metro.port });
+    metro.emit("Runtime.exceptionThrown", { exceptionDetails: { exception: { description: "Error: fatal X" } } });
+    await new Promise((r) => setTimeout(r, 20));
+    targets.length = 0;
+    conn.close();
+    await new Promise((r) => setTimeout(r, 20));
+    const server = makeServer();
+    registerErrorTools(server);
+    const res = await callTool(server, "get_errors", {});
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("[exception] Error: fatal X");
+    expect(res.content[0].text).toMatch(/not connected — /);
+  });
+});
+
 describe("get_errors around a reload", () => {
   async function trackedMetro() {
     metro = await startFakeMetro({ port: 0 });

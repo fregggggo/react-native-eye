@@ -36,6 +36,8 @@ export type FakeMetro = {
   setHandler(method: string, fn: (params: any) => any): void;
   close(): Promise<void>;
   connectionCount(): number;
+  /** Closes every debugger socket, as Metro does when the app process dies; the server keeps running. */
+  dropClients(): void;
 };
 
 export async function startFakeMetro(opts: {
@@ -102,6 +104,9 @@ export async function startFakeMetro(opts: {
       handlers[method] = fn;
     },
     connectionCount: () => clients.size,
+    dropClients() {
+      for (const ws of clients) ws.close();
+    },
     close: () =>
       new Promise<void>((resolve) => {
         for (const ws of clients) ws.close();

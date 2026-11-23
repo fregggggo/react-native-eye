@@ -1,5 +1,5 @@
 import WebSocket from "ws";
-import { ConnectionError } from "./errors.js";
+import { CdpTimeoutError, ConnectionError } from "./errors.js";
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void; timer: NodeJS.Timeout };
 
@@ -94,9 +94,13 @@ export class CdpClient {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
+        // The socket is still open (a close rejects everything pending first),
+        // so this is the app not answering, not a lost connection.
         reject(
-          new ConnectionError(
-            `${method} timed out after ${timeoutMs}ms — the app's JS thread may be blocked or the target is stale`,
+          new CdpTimeoutError(
+            `${method} timed out after ${timeoutMs}ms — the app's JS thread may be blocked or busy ` +
+              `(a long synchronous task, or a native call it is waiting on). The debugger socket is still open, ` +
+              `so reconnecting will not help: retry once the app is idle, or run long work with eval_js background: true.`,
           ),
         );
       }, timeoutMs);

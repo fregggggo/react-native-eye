@@ -5,7 +5,7 @@
 //   2. never read a property that can throw. `responseText` throws whenever
 //      responseType is not ""/"text", and whatwg-fetch (RN's fetch) sets
 //      responseType = "blob" on every request.
-export const INTERCEPTOR_VERSION = 3;
+export const INTERCEPTOR_VERSION = 4;
 
 export const NETWORK_INTERCEPTOR_SOURCE = `
 (function () {
@@ -60,7 +60,26 @@ export const NETWORK_INTERCEPTOR_SOURCE = `
     if (globalThis.__RNE_NET__.length > CAP) globalThis.__RNE_NET__.shift();
     return entry;
   }
-  function touch(entry) { entry.__d = 1; }
+  function touch(entry) { if (entry) entry.__d = 1; }
+  // Request bodies are capped like response bodies: an app uploading base64
+  // photos kept up to CAP multi-megabyte strings alive in its own heap.
+  function capBody(s) {
+    return s.length > MAX_BODY ? s.slice(0, MAX_BODY) + "…(+" + (s.length - MAX_BODY) + " chars)" : s;
+  }
+  // Recorded when the request goes out, pending until it answers: a request
+  // that hangs — the spinner that never stops — is visible instead of absent.
+  function start(method, url, body) {
+    try {
+      return record({ method: method, url: url, requestBody: typeof body === "string" ? capBody(body) : undefined, pending: true });
+    } catch (e) { return null; }
+  }
+  function fail(entry, started, err) {
+    if (!entry) return;
+    entry.pending = false;
+    entry.durationMs = Date.now() - started;
+    entry.error = err;
+    touch(entry);
+  }
 
   var origFetch = globalThis.fetch;
   if (origFetch && wrapFetch) {
@@ -69,7 +88,7 @@ export const NETWORK_INTERCEPTOR_SOURCE = `
       var url = typeof input === "string" ? input : (input && input.url) || String(input);
       var method = (init && init.method) || (input && input.method) || "GET";
       var started = Date.now();
-      var reqBody = (init && typeof init.body === "string") ? init.body : undefined;
+      var entry = start(method, url, init && init.body);
       var result;
       // RN's fetch is whatwg-fetch, i.e. an XHR underneath, and it opens/sends
       // that XHR synchronously inside this call. Without this flag both wrappers
@@ -77,26 +96,33 @@ export const NETWORK_INTERCEPTOR_SOURCE = `
       globalThis.__RNE_IN_FETCH__ = (globalThis.__RNE_IN_FETCH__ || 0) + 1;
       try {
         result = origFetch.apply(this, arguments);
+      } catch (e) {
+        try { fail(entry, started, String(e)); } catch (e2) {}
+        throw e;
       } finally {
         globalThis.__RNE_IN_FETCH__--;
       }
       return result.then(function (res) {
-        // Recorded up front so the request is visible immediately; the body is
-        // read asynchronously and merged into the same entry when it lands.
-        var entry = record({
-          method: method, url: url, status: res.status,
-          durationMs: Date.now() - started, requestBody: reqBody, bodyPending: true
-        });
+        // The status lands now; the body is read asynchronously and merged
+        // into the same entry when it does.
         try {
+          if (entry) {
+            entry.pending = false;
+            entry.status = res.status;
+            entry.durationMs = Date.now() - started;
+            entry.bodyPending = true;
+            touch(entry);
+          }
           res.clone().text().then(function (t) {
-            entry.responseBody = t ? t.slice(0, MAX_BODY) : undefined;
+            if (!entry) return;
+            entry.responseBody = t ? capBody(t) : undefined;
             entry.bodyPending = false;
             touch(entry);
-          }, function () { entry.bodyPending = false; touch(entry); });
-        } catch (e) { entry.bodyPending = false; }
+          }, function () { if (entry) { entry.bodyPending = false; touch(entry); } });
+        } catch (e) { if (entry) entry.bodyPending = false; }
         return res;
       }).catch(function (err) {
-        record({ method: method, url: url, durationMs: Date.now() - started, requestBody: reqBody, error: String(err) });
+        try { if (entry && entry.pending) fail(entry, started, String(err)); } catch (e) {}
         throw err;
       });
     };
@@ -116,9 +142,9 @@ export const NETWORK_INTERCEPTOR_SOURCE = `
         var rt = xhr.responseType;
         if (rt === "" || rt === "text") {
           var t = xhr.responseText;
-          return typeof t === "string" ? t.slice(0, MAX_BODY) : undefined;
+          return typeof t === "string" ? capBody(t) : undefined;
         }
-        if (rt === "json" && xhr.response != null) return JSON.stringify(xhr.response).slice(0, MAX_BODY);
+        if (rt === "json" && xhr.response != null) return capBody(JSON.stringify(xhr.response));
       } catch (e) { /* unreadable body — the request itself is still recorded */ }
       return undefined;
     }
@@ -134,22 +160,30 @@ export const NETWORK_INTERCEPTOR_SOURCE = `
         try { self.__rne = null; } catch (e) {}
         return send.apply(this, arguments);
       }
-      try { if (self.__rne && typeof body === "string") self.__rne.requestBody = body; } catch (e) {}
+      var entry = null;
+      try { if (self.__rne) entry = start(self.__rne.method, self.__rne.url, body); } catch (e) {}
       try {
         this.addEventListener("loadend", function () {
           try {
-            if (!self.__rne) return;
+            if (!entry) return;
             var status;
             try { status = self.status; } catch (e) {}
-            record({
-              method: self.__rne.method, url: self.__rne.url, status: status,
-              durationMs: Date.now() - started, requestBody: self.__rne.requestBody,
-              responseBody: readBody(self)
-            });
+            entry.pending = false;
+            entry.status = status;
+            entry.durationMs = Date.now() - started;
+            entry.responseBody = readBody(self);
+            // loadend with status 0 is an error, a timeout or an abort.
+            if (!status) entry.error = "no response (network error, timeout or abort)";
+            touch(entry);
           } catch (e) { /* never surface into app code */ }
         });
       } catch (e) {}
-      return send.apply(this, arguments);
+      try {
+        return send.apply(this, arguments);
+      } catch (e) {
+        try { fail(entry, started, String(e)); } catch (e2) {}
+        throw e;
+      }
     };
     globalThis.__RNE_WRAPPED_XHR_SEND__ = XHR.prototype.send;
   }

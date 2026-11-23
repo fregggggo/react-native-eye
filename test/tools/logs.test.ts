@@ -42,6 +42,27 @@ describe("get_logs", () => {
     expect(bySearch.content[0].text).toContain("hello world");
   });
 
+  it("still answers from what was captured when the app is gone", async () => {
+    const targets: any[] = [{ id: "t1", title: "App", deviceName: "iPhone 16" }];
+    metro = await startFakeMetro({ port: 0, targets });
+    metro.setHandler("Runtime.enable", () => ({}));
+    metro.setHandler("Log.enable", () => ({}));
+    metro.setHandler("Runtime.evaluate", () => ({ result: { value: undefined } }));
+    const conn = await getRegistry().connect({ port: metro.port });
+    metro.emit("Runtime.consoleAPICalled", { type: "error", args: [{ type: "string", value: "about to crash" }] });
+    await new Promise((r) => setTimeout(r, 20));
+    // The app crashed: its socket closed and Metro lists nothing any more.
+    targets.length = 0;
+    conn.close();
+    await new Promise((r) => setTimeout(r, 20));
+    const server = makeServer();
+    registerLogTools(server);
+    const res = await callTool(server, "get_logs", {});
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("[error] about to crash");
+    expect(res.content[0].text).toMatch(/not connected — .*was lost.*captured before the connection dropped/s);
+  });
+
   it("errors when not connected", async () => {
     getRegistry().reset();
     const server = makeServer();

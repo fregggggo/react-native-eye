@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getRegistry, RUNTIME_RELOADING_MESSAGE } from "../core/registry.js";
-import { text, truncate } from "../core/format.js";
+import { text, truncate, lostNote } from "../core/format.js";
 import { toToolError } from "../core/errors.js";
 
 export function registerErrorTools(server: McpServer): void {
@@ -10,12 +10,26 @@ export function registerErrorTools(server: McpServer): void {
     {
       title: "Get errors",
       description:
-        "Uncaught exceptions and redboxes captured since connecting. Includes the errors LogBox swallows, which never reach the debugger on their own.",
-      inputSchema: { limit: z.number().int().positive().max(100).optional() },
+        "Uncaught exceptions and redboxes captured since connecting. Includes the errors LogBox swallows, which never reach the debugger on their own. Still readable after the app crashed or the connection dropped.",
+      inputSchema: {
+        limit: z.number().int().positive().max(100).optional().describe("How many of the most recent errors (default 20)."),
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     },
     async ({ limit }) => {
       try {
-        const conn = await getRegistry().ensure();
+        const { conn, lost } = await getRegistry().ensureOrLast();
+        if (lost) {
+          // Nothing to drain from an app we cannot reach; what was pulled
+          // before it went away is the answer.
+          const kept = conn.errors.last(limit ?? 20);
+          if (kept.length === 0) return text(`No errors were captured before the connection dropped.${lostNote(lost)}`);
+          return text(
+            kept
+              .map((e) => `[${e.kind}] ${truncate(e.text, 800)}${conn.errorIsFromEarlierRuntime(e) ? " (before reload)" : ""}`)
+              .join("\n") + lostNote(lost),
+          );
+        }
         await conn.installInterceptors("errors");
         // The app buffers what LogBox swallowed; without this the tool answers
         // "No errors captured" under a full-screen redbox (field test D3).

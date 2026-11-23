@@ -115,6 +115,60 @@ describe("network interceptor snippet", () => {
     expect(thirdDrain).toHaveLength(0);
   });
 
+  it("records a fetch when it goes out, so one that never answers is visible as pending", async () => {
+    const g: any = { fetch: () => new Promise(() => {}) };
+    const out = install(g);
+    out.fetch("https://api.example.com/checkout", { method: "POST", body: "{}" });
+    const drained = JSON.parse(new Function("globalThis", `return ${drainNetworkExpression(0)}`)(out));
+    expect(drained).toHaveLength(1);
+    expect(drained[0]).toMatchObject({ method: "POST", url: "https://api.example.com/checkout", pending: true, requestBody: "{}" });
+    expect(drained[0].status).toBeUndefined();
+  });
+
+  it("completes the pending entry in place, and re-offers it", async () => {
+    let answer: (v: unknown) => void = () => {};
+    const g: any = { fetch: () => new Promise((r) => (answer = r)) };
+    const out = install(g);
+    const done = out.fetch("http://x/slow");
+    const first = JSON.parse(new Function("globalThis", `return ${drainNetworkExpression(0)}`)(out));
+    expect(first[0].pending).toBe(true);
+    answer({ status: 201, clone: () => ({ text: async () => "made" }) });
+    await done;
+    await new Promise((r) => setTimeout(r, 0));
+    const second = JSON.parse(new Function("globalThis", `return ${drainNetworkExpression(first[0].seq)}`)(out));
+    expect(out.__RNE_NET__).toHaveLength(1);
+    expect(second[0]).toMatchObject({ seq: first[0].seq, pending: false, status: 201, responseBody: "made" });
+  });
+
+  it("marks a failed fetch on its own entry instead of adding a second one", async () => {
+    const g: any = { fetch: () => Promise.reject(new TypeError("Network request failed")) };
+    const out = install(g);
+    await expect(out.fetch("http://x/down")).rejects.toThrow(/Network request failed/);
+    expect(out.__RNE_NET__).toHaveLength(1);
+    expect(out.__RNE_NET__[0]).toMatchObject({ pending: false, error: "TypeError: Network request failed" });
+  });
+
+  it("records a bare XHR at send and completes it at loadend", () => {
+    const g: any = { XMLHttpRequest: RnXhrLike };
+    const out = install(g);
+    const xhr: any = new out.XMLHttpRequest();
+    xhr.open("GET", "http://x/poll");
+    xhr.send();
+    expect(out.__RNE_NET__[0]).toMatchObject({ url: "http://x/poll", pending: true });
+    xhr.fire("loadend");
+    expect(out.__RNE_NET__).toHaveLength(1);
+    expect(out.__RNE_NET__[0]).toMatchObject({ pending: false, status: 200 });
+  });
+
+  it("caps a request body instead of keeping the whole upload alive in the app", async () => {
+    const g: any = { fetch: async () => ({ status: 200, clone: () => ({ text: async () => "ok" }) }) };
+    const out = install(g);
+    await out.fetch("http://x/upload", { method: "POST", body: "x".repeat(5_000_000) });
+    const body: string = out.__RNE_NET__[0].requestBody;
+    expect(body.length).toBeLessThan(4100);
+    expect(body).toMatch(/…\(\+4996000 chars\)$/);
+  });
+
   it("is idempotent", () => {
     const g: any = { fetch: async () => ({ status: 200, clone: () => ({ text: async () => "" }) }) };
     install(g);

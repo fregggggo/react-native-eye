@@ -2,7 +2,11 @@ import { getRegistry, type Connection } from "../core/registry.js";
 import { activeDriver, normalizeDeviceName, type DriverOpts, type ResolvedDevice } from "../drivers/resolve.js";
 import { UserInputError } from "../core/errors.js";
 
-export type ToolCtx = ResolvedDevice & { conn?: Connection };
+export type ToolCtx = ResolvedDevice & {
+  conn?: Connection;
+  /** The connection to this device's app that dropped, kept for what it captured. */
+  lost?: { conn: Connection; reason: string };
+};
 
 // Driving the device (tap, screenshot, OS layout) needs simctl/axe/adb, not a
 // debugger: requiring a CDP connection for those made a release build or an app
@@ -28,9 +32,14 @@ function sameDevice(conn: Connection, resolved: ResolvedDevice, explicit: string
 }
 
 export async function deviceContext(opts?: DriverOpts & { device?: string }): Promise<ToolCtx> {
-  const conn = await getRegistry().optional();
-  const resolved = await activeDriver({ ...opts, boundTo: conn?.meta.deviceName, boundId: conn?.meta.deviceId });
-  return { ...resolved, conn: conn && sameDevice(conn, resolved, opts?.device) ? conn : undefined };
+  const { conn, lost } = await getRegistry().optionalOrLast();
+  const bound = conn ?? lost?.conn;
+  const resolved = await activeDriver({ ...opts, boundTo: bound?.meta.deviceName, boundId: bound?.meta.deviceId });
+  return {
+    ...resolved,
+    conn: conn && sameDevice(conn, resolved, opts?.device) ? conn : undefined,
+    lost: lost && sameDevice(lost.conn, resolved, opts?.device) ? lost : undefined,
+  };
 }
 
 /** For tools that genuinely need the app runtime; reconnects if the socket dropped. */

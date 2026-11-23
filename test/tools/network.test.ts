@@ -219,6 +219,41 @@ describe("get_network detail lookup", () => {
     const res = await callTool(server, "get_network", { detail: 1 });
     expect(res.content[0].text).toContain("still loading");
   });
+
+  it("lists a request still waiting for its response as pending", async () => {
+    await connectWith([{ seq: 1, method: "POST", url: "http://api/checkout", pending: true, requestBody: "{}", timestamp: 1 }]);
+    const server = makeServer();
+    registerNetworkTools(server);
+    const list = await callTool(server, "get_network", {});
+    expect(list.content[0].text).toContain("#1 POST http://api/checkout → pending (no response yet)");
+    const one = await callTool(server, "get_network", { detail: 1 });
+    expect(one.content[0].text).toContain("status: (pending — sent, no response yet)");
+  });
+});
+
+describe("get_network after the connection is gone", () => {
+  it("lists what was captured, with a note, instead of failing", async () => {
+    const targets: any[] = [{ id: "t1", title: "App", deviceName: "iPhone 16" }];
+    metro = await startFakeMetro({ port: 0, targets });
+    metro.setHandler("Runtime.enable", () => ({}));
+    metro.setHandler("Log.enable", () => ({}));
+    metro.setHandler("Runtime.evaluate", (p) =>
+      String(p.expression).includes("JSON.stringify((globalThis.__RNE_NET__")
+        ? { result: { value: JSON.stringify([{ seq: 1, method: "GET", url: "http://api/me", status: 500, durationMs: 3, timestamp: 1 }]) } }
+        : { result: { value: undefined } },
+    );
+    const conn = await getRegistry().connect({ port: metro.port });
+    await conn.drainNetwork();
+    targets.length = 0;
+    conn.close();
+    await new Promise((r) => setTimeout(r, 20));
+    const server = makeServer();
+    registerNetworkTools(server);
+    const res = await callTool(server, "get_network", {});
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("#1 GET http://api/me → 500 (3ms)");
+    expect(res.content[0].text).toMatch(/not connected — /);
+  });
 });
 
 describe("get_network noise filtering", () => {

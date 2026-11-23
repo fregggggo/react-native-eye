@@ -32,6 +32,26 @@ describe("check_state", () => {
     expect(res.content[0].text).toContain("oops");
   });
 
+  it("still reports the errors captured when the app is gone", async () => {
+    const targets: any[] = [{ id: "t1", title: "App", deviceName: "iPhone 16" }];
+    metro = await startFakeMetro({ port: 0, targets });
+    metro.setHandler("Runtime.enable", () => ({}));
+    metro.setHandler("Log.enable", () => ({}));
+    metro.setHandler("Runtime.evaluate", () => ({ result: { value: undefined } }));
+    const conn = await getRegistry().connect({ port: metro.port });
+    conn.errors.push({ seq: 1, kind: "exception", text: "TypeError: crash", timestamp: 1 });
+    targets.length = 0;
+    conn.close();
+    await new Promise((r) => setTimeout(r, 20));
+    const server = makeServer();
+    registerCheckStateTools(server);
+    const res = await callTool(server, "check_state", {});
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("TypeError: crash");
+    expect(res.content[0].text).toMatch(/ROUTE:\n\(unavailable: not connected\)/);
+    expect(res.content[0].text).toMatch(/captured before the connection dropped/);
+  });
+
   // D3: a redbox LogBox swallowed is invisible to CDP, so check_state has to
   // pull it from the app before it can honestly say "none".
   it("reports a redbox the app captured", async () => {

@@ -23,6 +23,24 @@ describe("RingBuffer", () => {
     expect(b.all()).toEqual([]);
   });
 
+  it("push hands back the item it evicted", () => {
+    const b = new RingBuffer<number>(2);
+    expect(b.push(1)).toBeUndefined();
+    expect(b.push(2)).toBeUndefined();
+    expect(b.push(3)).toBe(1);
+  });
+
+  it("counts one hole once, however many observers report it", () => {
+    const b = new RingBuffer<number>(10);
+    b.push(1);
+    b.markGap();
+    b.markGap();
+    expect(b.gaps).toEqual([1]);
+    b.push(2);
+    b.markGap();
+    expect(b.gaps).toEqual([1, 2]);
+  });
+
   it("markGap records the current size as a gap position", () => {
     const b = new RingBuffer<number>(10);
     b.push(1);

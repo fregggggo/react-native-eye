@@ -44,6 +44,97 @@ describe("Registry", () => {
     expect(last.text).toContain("hello");
   });
 
+  it("renders console objects and arrays from the preview the target sends", async () => {
+    metro = await startFakeMetro({ port: 0 });
+    withRuntime(metro);
+    const conn = await getRegistry().connect({ port: metro.port });
+    // console.log("x", {a: 1, b: [1, 2], s: "hi"}, [1, 2, 3]) — live this read "x Object Array(3)".
+    metro.emit("Runtime.consoleAPICalled", {
+      type: "log",
+      args: [
+        { type: "string", value: "x" },
+        {
+          type: "object", className: "Object", description: "Object", objectId: "1",
+          preview: {
+            type: "object", description: "Object", overflow: false,
+            properties: [
+              { name: "a", type: "number", value: "1" },
+              { name: "b", type: "object", subtype: "array", value: "Array(2)",
+                valuePreview: { type: "object", subtype: "array", description: "Array(2)", overflow: false,
+                  properties: [{ name: "0", type: "number", value: "1" }, { name: "1", type: "number", value: "2" }] } },
+              { name: "s", type: "string", value: "hi" },
+            ],
+          },
+        },
+        {
+          type: "object", subtype: "array", className: "Array", description: "Array(3)", objectId: "2",
+          preview: { type: "object", subtype: "array", description: "Array(3)", overflow: false,
+            properties: [0, 1, 2].map((i) => ({ name: String(i), type: "number", value: String(i + 1) })) },
+        },
+        { type: "object", subtype: "null", value: null },
+        { type: "number", unserializableValue: "NaN", description: "NaN" },
+      ],
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(conn.logs.last(1)[0].text).toBe('x {a: 1, b: [1, 2], s: "hi"} [1, 2, 3] null NaN');
+  });
+
+  it("asks for the properties of an object that came without a preview", async () => {
+    metro = await startFakeMetro({ port: 0 });
+    withRuntime(metro);
+    const asked: string[] = [];
+    metro.setHandler("Runtime.getProperties", (p) => {
+      asked.push(p.objectId);
+      return {
+        result: [
+          { name: "id", enumerable: true, value: { type: "number", value: 42 } },
+          { name: "tags", enumerable: true, value: { type: "object", subtype: "array", description: "Array(2)" } },
+          { name: "__proto__", enumerable: false, value: { type: "object", description: "Object" } },
+        ],
+      };
+    });
+    const conn = await getRegistry().connect({ port: metro.port });
+    metro.emit("Runtime.consoleAPICalled", {
+      type: "log",
+      args: [{ type: "string", value: "user" }, { type: "object", className: "Object", description: "Object", objectId: "o7" }],
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(asked).toEqual(["o7"]);
+    expect(conn.logs.last(1)[0].text).toBe("user {id: 42, tags: Array(2)}");
+  });
+
+  it("fills in every object of a replayed burst, not just the first few", async () => {
+    metro = await startFakeMetro({ port: 0 });
+    withRuntime(metro);
+    metro.setHandler("Runtime.getProperties", (p) => ({
+      result: [{ name: "id", enumerable: true, value: { type: "string", value: p.objectId } }],
+    }));
+    const conn = await getRegistry().connect({ port: metro.port });
+    for (let i = 0; i < 12; i++) {
+      metro.emit("Runtime.consoleAPICalled", {
+        type: "log",
+        args: [{ type: "object", className: "Object", description: "Object", objectId: `o${i}` }],
+      });
+    }
+    await new Promise((r) => setTimeout(r, 150));
+    const texts = conn.logs.last(12).map((e) => e.text);
+    expect(texts).toEqual(Array.from({ length: 12 }, (_, i) => `{id: "o${i}"}`));
+  });
+
+  it("bounds what one console message can store", async () => {
+    metro = await startFakeMetro({ port: 0 });
+    withRuntime(metro);
+    const conn = await getRegistry().connect({ port: metro.port });
+    metro.emit("Runtime.consoleAPICalled", {
+      type: "log",
+      args: Array.from({ length: 20 }, () => ({ type: "string", value: "x".repeat(5000) })),
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    const text = conn.logs.last(1)[0].text;
+    expect(text.length).toBeLessThan(8100);
+    expect(text).toMatch(/…\(\+\d+ chars\)$/);
+  });
+
   it("captures exceptions as error entries", async () => {
     metro = await startFakeMetro({ port: 0 });
     withRuntime(metro);
@@ -272,6 +363,228 @@ describe("Registry connection lifecycle", () => {
     await conn.drainNetwork();
     expect(conn.network.all()).toHaveLength(1);
     expect(conn.network.all()[0].responseBody).toBe("late");
+  });
+
+  it("keeps its seq index no bigger than the ring, and ignores updates to evicted entries", async () => {
+    metro = await startFakeMetro({ port: 0 });
+    withRuntime(metro);
+    const conn = await getRegistry().connect({ port: metro.port });
+    let next = 0;
+    let late: number | undefined;
+    metro.setHandler("Runtime.evaluate", (p) => {
+      if (!String(p.expression).includes("JSON.stringify((globalThis.__RNE_NET__")) return evalEnvelope(undefined);
+      const batch = Array.from({ length: 100 }, () => ({ seq: ++next, method: "GET", url: `http://x/${next}`, timestamp: 1 }));
+      // Seq 1, long evicted, has its body land.
+      if (late !== undefined) batch.unshift({ seq: late, method: "GET", url: "http://x/1", timestamp: 1 });
+      return evalEnvelope(JSON.stringify(batch));
+    });
+    for (let i = 0; i < 10; i++) await conn.drainNetwork();
+    expect(conn.network.size()).toBe(200);
+    expect((conn as any).netIndex.size).toBe(200);
+    late = 1;
+    await conn.drainNetwork();
+    expect(conn.network.all().some((e) => e.seq === 1)).toBe(false);
+  });
+});
+
+describe("Registry reconnects without duplicating or losing anything", () => {
+  const tick = (ms = 30) => new Promise((r) => setTimeout(r, ms));
+
+  /** A runtime whose id the server stamps; `runtime.id` changes when the "app restarts". */
+  function stampingRuntime(m: FakeMetro, runtime: { id: string }) {
+    m.setHandler("Runtime.enable", () => ({}));
+    m.setHandler("Log.enable", () => ({}));
+    m.setHandler("Runtime.evaluate", (p) =>
+      evalEnvelope(String(p.expression).includes("__RNE_RUNTIME_ID__") ? runtime.id : undefined),
+    );
+  }
+
+  it("shares one reconnect between parallel callers instead of opening a socket each", async () => {
+    metro = await startFakeMetro({ port: 0, targets: [{ id: "t1", title: "App" }] });
+    withRuntime(metro);
+    const first = await getRegistry().connect({ port: metro.port });
+    first.close();
+    await tick();
+    const all = await Promise.all([getRegistry().ensure(), getRegistry().ensure(), getRegistry().ensure()]);
+    await tick();
+    expect(new Set(all).size).toBe(1);
+    expect(metro.connectionCount()).toBe(1);
+  });
+
+  it("serialises two explicit connects", async () => {
+    metro = await startFakeMetro({ port: 0, targets: [{ id: "t1", title: "App" }] });
+    withRuntime(metro);
+    const [a, b] = await Promise.all([
+      getRegistry().connect({ port: metro.port }),
+      getRegistry().connect({ port: metro.port }),
+    ]);
+    await tick();
+    expect(a.connected).toBe(false); // replaced by the second, and closed
+    expect(b.connected).toBe(true);
+    expect(getRegistry().active()).toBe(b);
+    expect(metro.connectionCount()).toBe(1);
+  });
+
+  it("closes the socket of a failed handshake and keeps the previous connection", async () => {
+    metro = await startFakeMetro({ port: 0, targets: [{ id: "t1", title: "App" }] });
+    withRuntime(metro);
+    const first = await getRegistry().connect({ port: metro.port });
+    metro.setHandler("Runtime.enable", () => {
+      throw new Error("Runtime.enable failed");
+    });
+    await expect(getRegistry().connect({ port: metro.port })).rejects.toThrow(/Runtime.enable failed/);
+    await tick();
+    expect(first.connected).toBe(true);
+    expect(getRegistry().active()).toBe(first);
+    expect(metro.connectionCount()).toBe(1);
+  });
+
+  it("captures the console messages and exceptions the target sends while answering Runtime.enable", async () => {
+    metro = await startFakeMetro({ port: 0 });
+    withRuntime(metro);
+    // Hermes answers Runtime.enable and then replays the console messages it
+    // cached — the startup logs a connect used to drop on the floor.
+    metro.setHandler("Runtime.enable", () => {
+      process.nextTick(() => {
+        metro.emit("Runtime.executionContextCreated", { context: { id: 1 } });
+        metro.emit("Runtime.consoleAPICalled", { type: "log", args: [{ type: "string", value: "startup log" }], timestamp: 5 });
+        metro.emit("Runtime.exceptionThrown", { exceptionDetails: { exception: { description: "TypeError: startup boom" } } });
+      });
+      return {};
+    });
+    const conn = await getRegistry().connect({ port: metro.port });
+    await tick();
+    expect(conn.logs.all().map((l) => l.text)).toEqual(["startup log"]);
+    expect(conn.errors.all().map((e) => e.text)).toEqual(["TypeError: startup boom"]);
+    expect(conn.tracksRuntimes).toBe(true);
+    expect(conn.runtimeGeneration).toBe(0); // the announced context is adopted, not a reload
+  });
+
+  it("keeps the history of the same app across a reconnect, with a gap", async () => {
+    metro = await startFakeMetro({ port: 0, targets: [{ id: "t1", title: "App", deviceName: "iPhone 16" } as any] });
+    const runtime = { id: "rA" };
+    stampingRuntime(metro, runtime);
+    const first = await getRegistry().connect({ port: metro.port });
+    metro.emit("Runtime.consoleAPICalled", { type: "error", args: [{ type: "string", value: "about to crash" }], timestamp: 10 });
+    metro.emit("Runtime.exceptionThrown", { exceptionDetails: { exception: { description: "Error: fatal" } } });
+    await tick();
+    first.close();
+    await tick();
+    const again = await getRegistry().ensure();
+    expect(again).not.toBe(first);
+    expect(again.logs.all().map((l) => l.text)).toEqual(["about to crash"]);
+    expect(again.errors.all().map((e) => e.text)).toEqual(["Error: fatal"]);
+    expect(again.logs.gaps).toEqual([1]);
+    // Same runtime id: not a restart, so nothing is marked "before reload".
+    expect(again.runtimeGeneration).toBe(0);
+    expect(again.errorIsFromEarlierRuntime(again.errors.all()[0])).toBe(false);
+  });
+
+  it("does not duplicate the console messages Hermes replays on reconnect, but keeps the ones logged meanwhile", async () => {
+    metro = await startFakeMetro({ port: 0, targets: [{ id: "t1", title: "App" }] });
+    const runtime = { id: "rA" };
+    stampingRuntime(metro, runtime);
+    const first = await getRegistry().connect({ port: metro.port });
+    metro.emit("Runtime.consoleAPICalled", { type: "log", args: [{ type: "string", value: "one" }], timestamp: 100 });
+    await tick();
+    first.close();
+    await tick();
+    metro.setHandler("Runtime.enable", () => {
+      process.nextTick(() => {
+        metro.emit("Runtime.consoleAPICalled", { type: "log", args: [{ type: "string", value: "one" }], timestamp: 100 });
+        metro.emit("Runtime.consoleAPICalled", { type: "log", args: [{ type: "string", value: "while away" }], timestamp: 200 });
+      });
+      return {};
+    });
+    const again = await getRegistry().ensure();
+    await tick();
+    expect(again.logs.all().map((l) => l.text)).toEqual(["one", "while away"]);
+  });
+
+  it("treats a different runtime id on reconnect as an app restart", async () => {
+    metro = await startFakeMetro({ port: 0, targets: [{ id: "t1", title: "App" }] });
+    const runtime = { id: "rA" };
+    stampingRuntime(metro, runtime);
+    const first = await getRegistry().connect({ port: metro.port });
+    metro.emit("Runtime.exceptionThrown", { exceptionDetails: { exception: { description: "Error: old" } } });
+    // Two requests captured in the old runtime.
+    metro.setHandler("Runtime.evaluate", (p) => {
+      const expr = String(p.expression);
+      if (expr.includes("__RNE_RUNTIME_ID__")) return evalEnvelope(runtime.id);
+      if (expr.includes("__RNE_NET__") && expr.includes("JSON.stringify((globalThis.__RNE_NET__")) {
+        return evalEnvelope(JSON.stringify([1, 2].map((seq) => ({ seq, method: "GET", url: `http://old/${seq}`, timestamp: 1 }))));
+      }
+      return evalEnvelope(undefined);
+    });
+    await first.drainNetwork();
+    first.close();
+    await tick();
+    runtime.id = "rB"; // the app was relaunched while we were away
+    metro.setHandler("Runtime.evaluate", (p) => {
+      const expr = String(p.expression);
+      if (expr.includes("__RNE_RUNTIME_ID__")) return evalEnvelope(runtime.id);
+      if (expr.includes("JSON.stringify((globalThis.__RNE_NET__")) {
+        return evalEnvelope(JSON.stringify([{ seq: 1, method: "GET", url: "http://new/1", timestamp: 2 }]));
+      }
+      return evalEnvelope(undefined);
+    });
+    const again = await getRegistry().ensure();
+    expect(again.runtimeGeneration).toBe(1);
+    expect(again.errorIsFromEarlierRuntime(again.errors.all()[0])).toBe(true);
+    await again.drainNetwork();
+    // The new runtime's seq 1 is neither hidden behind the old watermark nor merged into old #1.
+    expect(again.network.all().map((e) => [e.seq, e.url])).toEqual([
+      [1, "http://old/1"],
+      [2, "http://old/2"],
+      [3, "http://new/1"],
+    ]);
+  });
+
+  it("starts fresh when connecting to a different app", async () => {
+    metro = await startFakeMetro({
+      port: 0,
+      targets: [
+        { id: "a", title: "App", deviceName: "iPhone 16" } as any,
+        { id: "b", title: "App", deviceName: "Pixel 8" } as any,
+      ],
+    });
+    withRuntime(metro);
+    const first = await getRegistry().connect({ port: metro.port, targetId: "a" });
+    metro.emit("Runtime.consoleAPICalled", { type: "log", args: [{ type: "string", value: "iphone log" }] });
+    await tick();
+    const other = await getRegistry().connect({ port: metro.port, targetId: "b" });
+    expect(first.logs.size()).toBe(1);
+    expect(other.logs.size()).toBe(0);
+  });
+
+  it("prefers an exact device name over one that merely contains it", async () => {
+    metro = await startFakeMetro({
+      port: 0,
+      targets: [
+        { id: "pro", title: "App", deviceName: "iPhone 15 Pro" } as any,
+        { id: "plain", title: "App", deviceName: "iPhone 15" } as any,
+      ],
+    });
+    withRuntime(metro);
+    const conn = await getRegistry().connect({ port: metro.port, device: "iPhone 15" });
+    expect(conn.meta.deviceName).toBe("iPhone 15");
+  });
+
+  it("refuses a partial device name that fits several devices", async () => {
+    metro = await startFakeMetro({
+      port: 0,
+      targets: [
+        { id: "pro", title: "App", deviceName: "iPhone 15 Pro" } as any,
+        { id: "max", title: "App", deviceName: "iPhone 15 Pro Max" } as any,
+      ],
+    });
+    withRuntime(metro);
+    await expect(getRegistry().connect({ port: metro.port, device: "iphone 15 p" })).rejects.toThrow(
+      /matches several devices.*"iPhone 15 Pro".*"iPhone 15 Pro Max"/,
+    );
+    // A unique partial name still works.
+    const conn = await getRegistry().connect({ port: metro.port, device: "pro max" });
+    expect(conn.meta.deviceName).toBe("iPhone 15 Pro Max");
   });
 });
 

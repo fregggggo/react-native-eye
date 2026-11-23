@@ -38,6 +38,19 @@ export class DriverError extends Error {
 }
 
 /**
+ * A CDP request got no answer while the debugger socket stayed open: the app's
+ * JS thread is busy or blocked. Not a ConnectionError on purpose — "Not
+ * connected, run connect" sent the agent off to reconnect, which cannot help a
+ * busy thread and threw away everything captured so far.
+ */
+export class CdpTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CdpTimeoutError";
+  }
+}
+
+/**
  * The app's own code failed — it threw, rejected, or never settled. Distinct from
  * ConnectionError on purpose: the connection is fine, and telling the user to
  * restart Metro because their `JSON.parse` threw sends them the wrong way.
@@ -177,6 +190,9 @@ export function toToolError(err: unknown): ToolError {
       }
       break;
     }
+    case "CdpTimeoutError":
+      text = `App not responding: ${e.message}`;
+      break;
     case "RuntimeError":
       text = `App error: ${e.message}`;
       break;

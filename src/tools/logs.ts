@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getRegistry } from "../core/registry.js";
-import { text, truncate } from "../core/format.js";
+import { text, truncate, lostNote } from "../core/format.js";
 import { toToolError } from "../core/errors.js";
 
 export function registerLogTools(server: McpServer): void {
@@ -10,16 +10,17 @@ export function registerLogTools(server: McpServer): void {
     {
       title: "Get logs",
       description:
-        "Recent console logs from the app. Filter by level and/or search substring. Note: only logs emitted after connect are captured — reload_app to catch cold-start output.",
+        "Recent console logs from the app. Filter by level and/or search substring. Logs survive a reconnect to the same app, and are still readable after the app crashed or the connection dropped. Note: logs from before connect are only there if the runtime replays them on connect — reload_app to catch cold-start output.",
       inputSchema: {
-        limit: z.number().int().positive().max(500).optional(),
-        level: z.enum(["log", "info", "warn", "error", "debug"]).optional(),
-        search: z.string().optional(),
+        limit: z.number().int().positive().max(500).optional().describe("How many of the most recent matching lines (default 30)."),
+        level: z.enum(["log", "info", "warn", "error", "debug"]).optional().describe("Only lines logged at this level."),
+        search: z.string().optional().describe("Only lines containing this text (case-insensitive)."),
       },
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     },
     async ({ limit, level, search }) => {
       try {
-        const conn = await getRegistry().ensure();
+        const { conn, lost } = await getRegistry().ensureOrLast();
         let entries = conn.logs.all();
         if (level) entries = entries.filter((e) => e.level === level);
         if (search) {
@@ -34,10 +35,15 @@ export function registerLogTools(server: McpServer): void {
             : "";
         const sliced = entries.slice(Math.max(0, entries.length - (limit ?? 30)));
         if (sliced.length === 0) {
-          return text(`No logs captured since connect.${gapNote}`);
+          // A filter that matched nothing is not an app that logged nothing.
+          const total = conn.logs.size();
+          if (total > 0 && (level || search)) {
+            return text(`No logs match (${total} captured in all).${gapNote}${lostNote(lost)}`);
+          }
+          return text(`No logs captured since connect.${gapNote}${lostNote(lost)}`);
         }
         const lines = sliced.map((e) => `[${e.level}] ${truncate(e.text, 500)}`);
-        return text(lines.join("\n") + gapNote);
+        return text(lines.join("\n") + gapNote + lostNote(lost));
       } catch (err) {
         return toToolError(err);
       }

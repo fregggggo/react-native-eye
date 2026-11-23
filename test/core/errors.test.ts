@@ -4,6 +4,7 @@ import {
   ConnectionError,
   DriverError,
   RuntimeError,
+  CdpTimeoutError,
   toToolError,
   driverErrorHint,
 } from "../../src/core/errors.js";
@@ -37,6 +38,12 @@ describe("app failures are not connection failures", () => {
     const out = toToolError(new RuntimeError("Error: BOOM_TEST"));
     expect(out.content[0].text).toContain("App error: Error: BOOM_TEST");
     expect(out.content[0].text).not.toMatch(/not connected|start.*metro/i);
+  });
+
+  it("reports a CDP timeout as the app not responding, without the reconnect advice", () => {
+    const out = toToolError(new CdpTimeoutError("Runtime.evaluate timed out after 10ms"));
+    expect(out.content[0].text).toBe("App not responding: Runtime.evaluate timed out after 10ms");
+    expect(out.content[0].text).not.toMatch(/not connected|run 'connect'/i);
   });
 
   it("still advises connecting when the link really is down", () => {
