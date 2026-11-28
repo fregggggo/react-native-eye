@@ -1,0 +1,20 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.fregggggo/react-native-eye",
+  "title": "React Native Eye",
+  "description": "Safe, fast MCP server giving AI agents eyes into a running React Native app.",
+  "repository": {
+    "url": "https://github.com/fregggggo/react-native-eye",
+    "source": "github"
+  },
+  "websiteUrl": "https://react-native-eye.com",
+  "version": "0.2.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "react-native-eye",
+      "version": "0.2.0",
+      "transport": { "type": "stdio" }
+    }
+  ]
+}

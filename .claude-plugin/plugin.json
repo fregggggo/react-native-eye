@@ -1,0 +1,36 @@
+{
+  "name": "react-native-eye",
+  "version": "0.2.0",
+  "description": "Gives Claude eyes and hands in a running React Native app: screen, taps, logs, network, state and errors over Metro.",
+  "author": {
+    "name": "fregggggo",
+    "url": "https://github.com/fregggggo"
+  },
+  "homepage": "https://react-native-eye.com",
+  "repository": "https://github.com/fregggggo/react-native-eye",
+  "license": "MIT",
+  "keywords": [
+    "react-native",
+    "expo",
+    "mcp",
+    "ios-simulator",
+    "android-emulator",
+    "debugging"
+  ],
+  "mcpServers": {
+    "react-native-eye": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "react-native-eye@latest"
+      ]
+    }
+  },
+  "network": {
+    "hosts": [
+      "localhost",
+      "127.0.0.1",
+      "registry.npmjs.org"
+    ]
+  }
+}

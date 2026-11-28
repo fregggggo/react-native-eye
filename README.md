@@ -33,8 +33,17 @@ It is built for agent speed. Composite tools run a whole interaction in one call
   <img src="assets/readme-observe.png" width="552" alt="A login screen next to what the agent reads from one observe call: every element with its tap point (Welcome back @196,188 … Log in @196,468 … Create account @196,772), no errors, and the latest log line.">
 </p>
 
+## Why react-native-eye
+
+- **Fast.** Taps and layout go through the app's JS runtime: a press takes about 1 ms and a full-screen layout about 80 ms. There is no round trip through the OS accessibility layer.
+- **Few round trips.** `run_flow` runs a whole flow (fill a form, submit, wait, check) in one tool call. `observe` returns the screen, errors and the latest logs together.
+- **Deep in React Native.** It reads redbox errors, console logs, network requests, app state and the component tree. All of it comes from Metro, so the app needs no SDK and no code changes.
+- **Private.** No telemetry, no accounts, no cloud, no call limits. Automated tests enforce this.
+- **Light.** It works on iOS and Android, with Expo and bare React Native. It has three runtime dependencies and runs on Node 18 or newer.
+
 ## Contents
 
+- [Why react-native-eye](#why-react-native-eye)
 - [Quick start](#quick-start)
 - [Requirements](#requirements)
 - [What the agent can do](#what-the-agent-can-do)
@@ -52,7 +61,21 @@ It is built for agent speed. Composite tools run a whole interaction in one call
 
 **1. Add the server to your MCP client.**
 
-Claude Code, from your project folder:
+One click:
+
+<p>
+  <a href="https://cursor.com/en/install-mcp?name=react-native-eye&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsInJlYWN0LW5hdGl2ZS1leWVAbGF0ZXN0Il19"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cursor.com/deeplink/mcp-install-light.svg"><img alt="Add to Cursor" src="https://cursor.com/deeplink/mcp-install-dark.svg" height="32"></picture></a>
+  <a href="https://insiders.vscode.dev/redirect?url=vscode%3Amcp%2Finstall%3F%257B%2522name%2522%253A%2522react-native-eye%2522%252C%2522command%2522%253A%2522npx%2522%252C%2522args%2522%253A%255B%2522-y%2522%252C%2522react-native-eye%2540latest%2522%255D%257D"><img alt="Install in VS Code" src="https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=for-the-badge" height="32"></a>
+  <a href="https://insiders.vscode.dev/redirect?url=vscode-insiders%3Amcp%2Finstall%3F%257B%2522name%2522%253A%2522react-native-eye%2522%252C%2522command%2522%253A%2522npx%2522%252C%2522args%2522%253A%255B%2522-y%2522%252C%2522react-native-eye%2540latest%2522%255D%257D"><img alt="Install in VS Code Insiders" src="https://img.shields.io/badge/VS_Code_Insiders-Install_Server-24bfa5?style=for-the-badge" height="32"></a>
+</p>
+
+Claude Code, as a plugin (any folder):
+
+```sh
+/plugin install react-native-eye --marketplace fregggggo/react-native-eye
+```
+
+Or as a plain MCP server, from your project folder:
 
 ```sh
 claude mcp add react-native-eye -- npx -y react-native-eye@latest

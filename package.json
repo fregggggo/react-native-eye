@@ -3,6 +3,7 @@
   "version": "0.2.0",
   "mcpName": "io.github.fregggggo/react-native-eye",
   "description": "Safe, fast MCP server giving AI agents eyes into a running React Native app.",
+  "keywords": ["mcp", "mcp-server", "model-context-protocol", "react-native", "expo", "metro", "ios-simulator", "android-emulator", "mobile-testing", "e2e", "ui-automation", "debugging", "hermes", "claude", "claude-code", "cursor", "codex", "ai-agent"],
   "type": "module",
   "bin": { "react-native-eye": "./build/index.js" },
   "main": "./build/index.js",

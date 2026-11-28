@@ -1,0 +1,15 @@
+{
+  "name": "react-native-eye",
+  "description": "Claude Code plugin for react-native-eye, an MCP server for running React Native apps.",
+  "owner": {
+    "name": "fregggggo",
+    "url": "https://github.com/fregggggo"
+  },
+  "plugins": [
+    {
+      "name": "react-native-eye",
+      "source": "./",
+      "description": "Gives Claude eyes and hands in a running React Native app: screen, taps, logs, network, state and errors over Metro."
+    }
+  ]
+}
